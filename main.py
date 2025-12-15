@@ -33,45 +33,43 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
-    """Calcula el límite superior y el paso de forma inteligente (5-7 divisiones)."""
-    target_max = max_data * 1.1 # Margen del 10%
-    if target_max <= 0: return 10, 2
+    """Calcula el límite superior y el paso de forma inteligente (5-7 divisiones) con blindaje."""
+    # Blindaje: Asegurar un valor mínimo para la escala Y
+    if max_data < 0.5: 
+        max_data = 0.5 
 
+    target_max = max_data * 1.1 # Margen del 10%
     ideal_step = target_max / 5.0 # Objetivo: 5 divisiones
 
-    # Encontrar la potencia de 10 más cercana
-    if ideal_step == 0: pow10 = 1
+    # Cálculo de potencia de 10
+    if ideal_step <= 0: pow10 = 1
     else: pow10 = 10**math.floor(math.log10(ideal_step))
     
-    # Candidatos limpios: 1x, 2x, 5x
-    candidatos = [1 * pow10, 2 * pow10, 5 * pow10]
+    # Candidatos limpios: 1x, 2x, 5x. Incluye 0.5, 0.2, 0.1 para escalas bajas
+    candidatos_raw = [1 * pow10, 2 * pow10, 5 * pow10]
     
-    # Manejar pasos fraccionarios (ej: 0.1, 0.5)
     if ideal_step < 1:
-        candidatos = [0.1, 0.2, 0.5, 1.0]
-        pow10 = 1
+        candidatos_raw.extend([0.1, 0.2, 0.5, 1.0])
+        candidatos_raw = [c for c in candidatos_raw if c > 0.001]
 
-    # Elegir el candidato más pequeño que sea mayor o igual al ideal_step
-    paso_y = min([c for c in candidatos if c >= ideal_step])
+    # Filtro de Candidatos: Elige el paso más pequeño que es >= al ideal
+    candidatos_validos = [c for c in candidatos_raw if c >= ideal_step]
     
-    # Corrección para pasos muy pequeños que se repiten
-    if paso_y <= 0.001: paso_y = 0.5 # Default de seguridad para ruido
+    # --- BLINDAJE CRÍTICO (min() arg is empty fix) ---
+    if not candidatos_validos:
+        # Si la lista está vacía (ej. ideal_step es 60 y los candidatos son [10, 20, 50]),
+        # usamos el más pequeño de los candidatos mayores que ideal_step * 2 para asegurar un paso limpio.
+        paso_y = min([c for c in [10, 20, 50, 100, 200, 500, 1000] if c >= ideal_step * 2])
+    else:
+        paso_y = min(candidatos_validos)
 
-    # Calcular el límite superior final redondeado al paso
+    # Cálculo final
     limite_superior_y = math.ceil(target_max / paso_y) * paso_y
     
-    # Aseguramos un mínimo de 10 mAU y ajustamos pasos para valores muy bajos
-    if limite_superior_y < 10:
-        if target_max > 5:
-            limite_superior_y = 10
-            paso_y = 2
-        else: # Picos muy pequeños, a pasos de 1 mAU o 0.5 mAU
-            if target_max > 1:
-                limite_superior_y = math.ceil(target_max / 1.0) * 1.0
-                paso_y = 0.5
-            else:
-                limite_superior_y = math.ceil(target_max / 0.5) * 0.5
-                paso_y = 0.1
+    # Ajuste final para asegurar que se muestre algo si es muy bajo
+    if limite_superior_y < 5.0:
+        limite_superior_y = 5.0
+        paso_y = 1.0
 
     return limite_superior_y, paso_y
 
@@ -88,6 +86,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     picos_encontrados = 0
     altura_maxima_detectada = 0.0
     
+    # --- LECTURA DE MÚLTIPLES PICOS (RESTAURADO) ---
     for i in range(50):
         fila_actual = fila_inicio + i
         dato_tR = df.iloc[fila_actual, 1]
@@ -119,10 +118,10 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
     fig, ax = plt.subplots(figsize=(10, 4))
     
-    # --- CORRECCIÓN NUEVA: GROSOR DE LÍNEA ---
-    ax.plot(t, y_total, color="#205ea6", linewidth=0.6) # Línea más fina (0.6) para nitidez en escalas bajas
+    # --- GROSOR DE LÍNEA (Restaurado a Fino) ---
+    ax.plot(t, y_total, color="#205ea6", linewidth=0.6) 
 
-    # --- ESCALA Y ---
+    # --- ESCALA Y (Blindada y Estable) ---
     max_y_total = np.max(y_total)
     limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
 
@@ -132,18 +131,17 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
     ax.set_yticks(ticks_y)
     
-    # Formatear etiquetas Y (1 decimal si es < 10, sino entero)
+    # Formatear etiquetas Y
     etiquetas_y = []
     for t_val in ticks_y:
+        # 1 decimal para valores muy bajos, entero para valores >= 10
         if t_val >= 10 and float(t_val).is_integer():
             etiquetas_y.append(str(int(t_val)))
-        elif t_val >= 1:
-            etiquetas_y.append(f"{t_val:.1f}")
-        else: # Para valores muy bajos (0.5, 0.1)
+        else:
             etiquetas_y.append(f"{t_val:.1f}")
     ax.set_yticklabels(etiquetas_y)
 
-    # --- ESCALA X (Mantenida) ---
+    # --- ESCALA X (Estable) ---
     ax.set_xlim(0, t_final) 
     
     if t_final <= 10: paso_x = 1
@@ -171,8 +169,8 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
 
     ax.set_xticklabels(labels_x)
     
-    # --- CORRECCIÓN ETIQUETA "mAU" ---
-    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-15) 
+    # --- POSICIÓN ETIQUETA "mAU" (Ajuste Final Anti-Solapamiento) ---
+    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-10) 
     
     # --- SUBDIVISIONES (Mantenidas) ---
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
@@ -248,11 +246,11 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.3 (Estética Fina)")
+    root.title("HPLC Gen v3.5 (Estética y Multi-Pico estable)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Línea base fina y escalas Y ajustadas automáticamente.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Blindaje contra errores de picos pequeños. Línea base más fina (0.6).", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
