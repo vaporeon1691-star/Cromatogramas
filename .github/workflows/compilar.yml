@@ -1,0 +1,33 @@
+name: Crear Ejecutable Windows
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Descargar código
+      uses: actions/checkout@v4
+
+    - name: Instalar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Instalar dependencias
+      run: |
+        pip install -r requirements.txt
+
+    - name: Compilar con PyInstaller
+      run: |
+        pyinstaller --onefile --noconsole --name="GeneradorHPLC" main.py
+
+    - name: Subir el .exe resultante
+      uses: actions/upload-artifact@v4
+      with:
+        name: MiAplicacionHPLC
+        path: dist/GeneradorHPLC.exe
