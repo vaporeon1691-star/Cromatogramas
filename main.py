@@ -33,12 +33,12 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
-    """Calcula el límite superior y el paso para EXACTAMENTE 5-6 divisiones."""
+    """Calcula el límite superior y el paso para EXACTAMENTE 5-6 divisiones, blindado."""
     if max_data < 0.5: 
         max_data = 0.5 
 
     target_max = max_data * 1.1 
-    # AJUSTE 1: Dividir por 4.5 para forzar el redondeo a 5 o 6 divisiones limpias.
+    # AJUSTE 1: Dividir por 4.5 para forzar el redondeo a 5 o 6 ticks (incluyendo 0).
     ideal_step = target_max / 4.5 
 
     try:
@@ -79,14 +79,13 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
     
     t = np.linspace(0, t_final, 15000)
-    # AJUSTE 2: Reducir el inicio de la línea base a 0.1 mAU
-    y_total = np.zeros_like(t) + 0.1 
+    # AJUSTE 2: LÍNEA BASE ELEVADA (0.2 mAU)
+    y_total = np.zeros_like(t) + 0.2 
 
     fila_inicio = 61
     picos_encontrados = 0
     altura_maxima_detectada = 0.0
     
-    # --- BARRIDO DE MÚLTIPLES PICOS (Estable) ---
     for i in range(50):
         fila_actual = fila_inicio + i
         dato_tR = df.iloc[fila_actual, 1]
@@ -118,7 +117,6 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
     fig, ax = plt.subplots(figsize=(10, 4))
     
-    # --- GROSOR DE LÍNEA (0.6) ---
     ax.plot(t, y_total, color="#205ea6", linewidth=0.6) 
 
     # --- ESCALA Y (Blindada y Estable) ---
@@ -131,13 +129,18 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
     ax.set_yticks(ticks_y)
     
-    # Formatear etiquetas Y
+    # --- AJUSTE 3 & 4: FORMATO Y REEMPLAZO "mAU" ---
     etiquetas_y = []
-    for t_val in ticks_y:
-        if t_val >= 10 and float(t_val).is_integer():
+    for i, t_val in enumerate(ticks_y):
+        if i == len(ticks_y) - 1:
+            etiquetas_y.append("mAU") # Último tick es la etiqueta
+        elif t_val == 0.0:
+            etiquetas_y.append("0") # Cero sin decimal
+        elif t_val >= 10 and float(t_val).is_integer():
             etiquetas_y.append(str(int(t_val)))
         else:
             etiquetas_y.append(f"{t_val:.1f}")
+            
     ax.set_yticklabels(etiquetas_y)
 
     # --- ESCALA X (Estable) ---
@@ -168,8 +171,8 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
 
     ax.set_xticklabels(labels_x)
     
-    # AJUSTE 3: POSICIÓN ETIQUETA "mAU" (Se usa labelpad=0 para evitar solapamiento)
-    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=0) 
+    # Eliminamos el set_ylabel, ya que la etiqueta "mAU" está ahora en el último tick Y
+    # ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-10) 
     
     # --- SUBDIVISIONES (Mantenidas) ---
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
@@ -215,18 +218,14 @@ def seleccionar_archivo():
         png_temp = os.path.join(temp_dir, "crom.png")
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
-        # 1. Guardar el PNG localmente
         fig.savefig(png_temp, dpi=300, bbox_inches='tight')
         plt.close(fig) 
 
-        # 2. Copiar el PNG del local a la red (fuerza I/O)
         shutil.copy2(png_temp, ruta_destino_png)
 
-        # 3. Forzar la escritura completa al servidor
         with open(ruta_destino_png, 'ab') as f:
              os.fsync(f.fileno())
         
-        # 4. PAUSA OBLIGATORIA
         time_module.sleep(1) 
 
         # --- INFORME FINAL ---
@@ -252,11 +251,11 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.7 (Estética Final)")
+    root.title("HPLC Gen v3.8 (Estética Final de Laboratorio)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Estética final: 5 divisiones, línea base baja y mAU ajustado.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Estética final: 5 divisiones, mAU en el último tick, base baja.", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
