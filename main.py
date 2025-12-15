@@ -33,16 +33,14 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
-    """Calcula el límite superior y el paso de forma inteligente (5-7 divisiones) con BLINDAJE."""
-    # Blindaje inicial
+    """Calcula el límite superior y el paso para EXACTAMENTE 5-6 divisiones."""
     if max_data < 0.5: 
         max_data = 0.5 
 
-    target_max = max_data * 1.1 # Margen del 10%
-    ideal_step = target_max / 5.0 
+    target_max = max_data * 1.1 
+    # AJUSTE 1: Dividir por 4.5 para forzar el redondeo a 5 o 6 divisiones limpias.
+    ideal_step = target_max / 4.5 
 
-    # --- Generación de candidatos de pasos limpios ---
-    
     try:
         if ideal_step <= 0: pow10 = 1
         else: pow10 = 10**math.floor(math.log10(ideal_step))
@@ -59,19 +57,15 @@ def calcular_limite_y_escalado(max_data):
 
     candidatos_raw = sorted(list(set([round(c, 3) for c in candidatos_raw if c > 0])))
     
-    # --- Selección del paso (RESOLUCIÓN DEL ERROR min() arg is empty) ---
     candidatos_validos = [c for c in candidatos_raw if c >= ideal_step]
     
     if not candidatos_validos:
-        # Fallback de seguridad extrema
         paso_y = min([c for c in [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] if c >= ideal_step * 2])
     else:
         paso_y = min(candidatos_validos)
 
-    # Cálculo final
     limite_superior_y = math.ceil(target_max / paso_y) * paso_y
     
-    # Ajuste final para asegurar que se muestre algo si es muy bajo
     if limite_superior_y < 5.0:
         limite_superior_y = 5.0
         paso_y = 1.0
@@ -85,13 +79,14 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
     
     t = np.linspace(0, t_final, 15000)
-    y_total = np.zeros_like(t) + 0.5 
+    # AJUSTE 2: Reducir el inicio de la línea base a 0.1 mAU
+    y_total = np.zeros_like(t) + 0.1 
 
     fila_inicio = 61
     picos_encontrados = 0
     altura_maxima_detectada = 0.0
     
-    # --- BARRIDO DE MÚLTIPLES PICOS ---
+    # --- BARRIDO DE MÚLTIPLES PICOS (Estable) ---
     for i in range(50):
         fila_actual = fila_inicio + i
         dato_tR = df.iloc[fila_actual, 1]
@@ -123,7 +118,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
     fig, ax = plt.subplots(figsize=(10, 4))
     
-    # --- GROSOR DE LÍNEA (0.6 para nitidez en escalas bajas) ---
+    # --- GROSOR DE LÍNEA (0.6) ---
     ax.plot(t, y_total, color="#205ea6", linewidth=0.6) 
 
     # --- ESCALA Y (Blindada y Estable) ---
@@ -173,8 +168,8 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
 
     ax.set_xticklabels(labels_x)
     
-    # --- POSICIÓN ETIQUETA "mAU" (Ajuste Final Anti-Solapamiento) ---
-    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-10) 
+    # AJUSTE 3: POSICIÓN ETIQUETA "mAU" (Se usa labelpad=0 para evitar solapamiento)
+    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=0) 
     
     # --- SUBDIVISIONES (Mantenidas) ---
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
@@ -217,14 +212,21 @@ def seleccionar_archivo():
         fig, picos, alt_max, limite_y = procesar_archivo_local(local_filepath, t_final, hoja_leida)
         
         # --- GUARDADO EN RED Y SINCRONIZACIÓN FORZADA ---
+        png_temp = os.path.join(temp_dir, "crom.png")
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
-        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight')
+        # 1. Guardar el PNG localmente
+        fig.savefig(png_temp, dpi=300, bbox_inches='tight')
         plt.close(fig) 
 
+        # 2. Copiar el PNG del local a la red (fuerza I/O)
+        shutil.copy2(png_temp, ruta_destino_png)
+
+        # 3. Forzar la escritura completa al servidor
         with open(ruta_destino_png, 'ab') as f:
              os.fsync(f.fileno())
         
+        # 4. PAUSA OBLIGATORIA
         time_module.sleep(1) 
 
         # --- INFORME FINAL ---
@@ -250,11 +252,11 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.6 (Final Stable Build)")
+    root.title("HPLC Gen v3.7 (Estética Final)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Escala Y blindada, multi-pico estable y estética fina restaurada.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Estética final: 5 divisiones, línea base baja y mAU ajustado.", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
