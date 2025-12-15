@@ -9,7 +9,8 @@ import os
 import gc
 import shutil
 import tempfile
-import time as time_module # Para la pausa de sincronización
+import time as time_module 
+import math # Para la función ceil
 
 # =========================================================
 # FUNCIONES MATEMÁTICAS
@@ -32,7 +33,7 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 # =========================================================
-# PROCESAMIENTO (Solución 2: Línea Base)
+# PROCESAMIENTO
 # =========================================================
 def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
@@ -66,12 +67,9 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             picos_encontrados += 1
             if H > altura_maxima_detectada: altura_maxima_detectada = H
 
-    # ===== RUIDO + DERIVA ESTABLE (Volvemos a la función validada) =====
-    # 1. Ruido Estático
+    # ===== RUIDO + DERIVA ESTABLE (Línea Base Correcta) =====
     ruido_estatico = np.random.normal(0, 0.15, len(t))
-    # 2. Vibración suave y Deriva ondulatoria
     vibracion_y_deriva = 0.25 * np.sin(t * 1.5) + 0.15 * np.sin(t * 12.0)
-    
     y_total += ruido_estatico + vibracion_y_deriva
 
     # GRAFICADO
@@ -79,18 +77,42 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(t, y_total, color="#205ea6", linewidth=0.8)
 
-    # Escala X coherente (Ajuste que hiciste)
+    # --- CORRECCIÓN CLAVE 1: Límite del Eje X ---
+    # Forzar el límite a ser exactamente el tiempo final de AU3
     max_y = np.max(y_total)
-    ax.set_xlim(0, t_final)
+    ax.set_xlim(0, t_final) # <-- Establece el límite estricto de la gráfica
     ax.set_ylim(0, max(100, max_y * 1.1))
 
+    # --- CORRECCIÓN CLAVE 2: Cálculo de Ticks para Etiquetado ---
+    # Calcular el final de los ticks redondeado hacia arriba para el etiquetado "min"
+    
     if t_final <= 10: paso = 1
     elif t_final <= 30: paso = 5
     elif t_final <= 60: paso = 10
     else: paso = 20
-    ticks = np.arange(0, t_final + paso, paso)
-    ax.set_xticks(ticks)
-    labels = [str(int(x)) if i < len(ticks)-1 else "min" for i, x in enumerate(ticks)]
+    
+    # Redondeamos el límite superior para asegurar que el último tick (etiqueta "min") se dibuje
+    # Esto soluciona que 5.03 se extienda a 6.0
+    limite_superior_ticks = math.ceil(t_final / paso) * paso 
+    ticks = np.arange(0, limite_superior_ticks + 0.001, paso)
+
+    # Eliminar el último tick si queda muy fuera del límite AU3
+    ticks_filtrados = [t for t in ticks if t <= t_final * 1.05]
+    if not ticks_filtrados or ticks_filtrados[-1] < t_final * 0.9:
+        ticks_filtrados.append(t_final) # Asegura que el tiempo final esté marcado
+
+    ax.set_xticks(ticks_filtrados)
+
+    # Formateo de etiquetas (última como "min")
+    labels = []
+    for i, x in enumerate(ticks_filtrados):
+        if i == len(ticks_filtrados) - 1:
+            labels.append("min")
+        elif float(x).is_integer():
+            labels.append(str(int(x)))
+        else:
+            labels.append(f"{x:.1f}")
+
     ax.set_xticklabels(labels)
 
     ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-20)
@@ -103,7 +125,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     return fig, picos_encontrados, altura_maxima_detectada
 
 # =========================================================
-# INTERFAZ (Solución 1: Sincronización)
+# INTERFAZ (Sincronización de Red)
 # =========================================================
 def seleccionar_archivo():
     archivo_red_original = filedialog.askopenfilename(title="Selecciona Excel HPLC", filetypes=[("Excel Files", "*.xlsx *.xlsm")])
@@ -136,23 +158,21 @@ def seleccionar_archivo():
         # --- GUARDADO EN RED Y SINCRONIZACIÓN FORZADA ---
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
-        # 1. Guardar la figura
         fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight')
         plt.close(fig) 
 
-        # 2. Forzar la escritura completa al servidor
+        # Forzar la escritura completa al servidor
         with open(ruta_destino_png, 'ab') as f:
              os.fsync(f.fileno())
         
-        # 3. PAUSA OBLIGATORIA (CLAVE DE V2.8)
+        # PAUSA OBLIGATORIA
         time_module.sleep(1) 
 
         # --- INFORME FINAL ---
         mensaje = (f"✅ ¡PROCESO FINALIZADO!\n\n"
-                   f"La imagen se sincronizó correctamente con la red.\n"
-                   f"Hoja leída: {hoja_leida}\n"
+                   f"Límite de tiempo: {t_final:.2f} min\n"
+                   f"Línea Base: Corregida.\n"
                    f"Picos detectados: {picos}\n"
-                   f"Altura Máx: {alt_max:.1f} mAU\n\n"
                    f"Busca la imagen en la misma carpeta que el Excel.")
         
         messagebox.showinfo("Cromatograma Generado", mensaje)
@@ -161,18 +181,20 @@ def seleccionar_archivo():
         messagebox.showerror("Error Crítico", f"Fallo en el procesamiento:\n{str(e)}")
     
     finally:
-        # --- LIMPIEZA FINAL ---
         shutil.rmtree(temp_dir, ignore_errors=True)
         gc.collect()
         btn_cargar.config(text="Cargar Excel", state="normal")
 
+# =========================================================
+# MAIN
+# =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.0 (Estabilidad y Sincro)")
+    root.title("HPLC Gen v3.1 (Ajuste Final de Eje X)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Línea base corregida y sincronización de red forzada.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Línea base y límites de tiempo (AU3) corregidos.", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
