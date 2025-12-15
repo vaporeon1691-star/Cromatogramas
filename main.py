@@ -10,7 +10,7 @@ import gc
 import shutil
 import tempfile
 import time as time_module 
-import math # Para la función ceil
+import math
 
 # =========================================================
 # FUNCIONES MATEMÁTICAS
@@ -78,32 +78,25 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     ax.plot(t, y_total, color="#205ea6", linewidth=0.8)
 
     # --- CORRECCIÓN CLAVE 1: Límite del Eje X ---
-    # Forzar el límite a ser exactamente el tiempo final de AU3
     max_y = np.max(y_total)
-    ax.set_xlim(0, t_final) # <-- Establece el límite estricto de la gráfica
+    ax.set_xlim(0, t_final)
     ax.set_ylim(0, max(100, max_y * 1.1))
 
     # --- CORRECCIÓN CLAVE 2: Cálculo de Ticks para Etiquetado ---
-    # Calcular el final de los ticks redondeado hacia arriba para el etiquetado "min"
-    
     if t_final <= 10: paso = 1
     elif t_final <= 30: paso = 5
     elif t_final <= 60: paso = 10
     else: paso = 20
     
-    # Redondeamos el límite superior para asegurar que el último tick (etiqueta "min") se dibuje
-    # Esto soluciona que 5.03 se extienda a 6.0
     limite_superior_ticks = math.ceil(t_final / paso) * paso 
     ticks = np.arange(0, limite_superior_ticks + 0.001, paso)
 
-    # Eliminar el último tick si queda muy fuera del límite AU3
     ticks_filtrados = [t for t in ticks if t <= t_final * 1.05]
     if not ticks_filtrados or ticks_filtrados[-1] < t_final * 0.9:
-        ticks_filtrados.append(t_final) # Asegura que el tiempo final esté marcado
+        ticks_filtrados.append(t_final)
 
     ax.set_xticks(ticks_filtrados)
 
-    # Formateo de etiquetas (última como "min")
     labels = []
     for i, x in enumerate(ticks_filtrados):
         if i == len(ticks_filtrados) - 1:
@@ -128,8 +121,12 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
 # INTERFAZ (Sincronización de Red)
 # =========================================================
 def seleccionar_archivo():
-    archivo_red_original = filedialog.askopenfilename(title="Selecciona Excel HPLC", filetypes=[("Excel Files", "*.xlsx *.xlsm")])
-    if not archivo_red_original: return
+    archivo_red_original = filedialog.askopenfilename(
+        title="Selecciona Excel HPLC", 
+        filetypes=[("Excel Files", "*.xlsx *.xlsm")]
+    )
+    if not archivo_red_original: 
+        return
 
     btn_cargar.config(text="Procesando...", state="disabled")
     root.update()
@@ -146,8 +143,11 @@ def seleccionar_archivo():
             df_temp = pd.read_excel(local_filepath, sheet_name=HOJA_DATOS, header=None)
             hoja_leida = HOJA_DATOS
         except:
-            df_temp = pd.read_excel(local_filepath, header=None)
-            hoja_leida = "Primera Hoja (Default)"
+            try:
+                df_temp = pd.read_excel(local_filepath, header=None)
+                hoja_leida = "Primera Hoja (Default)"
+            except Exception as e:
+                raise Exception(f"No se puede leer el archivo Excel: {str(e)}")
             
         raw_t_final = df_temp.iloc[2, 46]
         t_final = excel_a_minutos(raw_t_final) or 10
@@ -155,33 +155,84 @@ def seleccionar_archivo():
         # --- PROCESAMIENTO ---
         fig, picos, alt_max = procesar_archivo_local(local_filepath, t_final, hoja_leida)
         
-        # --- GUARDADO EN RED Y SINCRONIZACIÓN FORZADA ---
+        # --- GUARDADO EN RED ---
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
-        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight')
-        plt.close(fig) 
-
-        # Forzar la escritura completa al servidor
-        with open(ruta_destino_png, 'ab') as f:
-             os.fsync(f.fileno())
+        # Guardar la figura
+        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight', metadata={'CreationDate': None})
+        plt.close(fig)
         
-        # PAUSA OBLIGATORIA
-        time_module.sleep(1) 
-
+        # --- VERIFICACIÓN ACTIVA DE CREACIÓN DEL ARCHIVO ---
+        max_intentos = 15  # Aumentado para redes lentas
+        intento = 0
+        archivo_creado = False
+        tamano_archivo = 0
+        
+        while intento < max_intentos and not archivo_creado:
+            # Intentar abrir y leer el archivo
+            try:
+                if os.path.exists(ruta_destino_png):
+                    tamano_actual = os.path.getsize(ruta_destino_png)
+                    # Verificar que el archivo tenga contenido válido (más de 1KB)
+                    if tamano_actual > 1000:
+                        # Verificar si el tamaño se estabilizó (no está en proceso de escritura)
+                        if tamano_archivo == tamano_actual:
+                            # Intentar leer el archivo para asegurar que esté disponible
+                            with open(ruta_destino_png, 'rb') as f:
+                                header = f.read(8)  # Leer cabecera PNG
+                                if header.startswith(b'\x89PNG\r\n\x1a\n'):
+                                    archivo_creado = True
+                                    break
+                        tamano_archivo = tamano_actual
+            except (IOError, OSError, PermissionError):
+                pass  # El archivo aún no está listo o está bloqueado
+            
+            # Esperar progresivamente más tiempo
+            tiempo_espera = 0.3 * (intento + 1)
+            time_module.sleep(tiempo_espera)
+            intento += 1
+            root.update()  # Mantener la interfaz responsiva
+        
+        # --- VERIFICACIÓN FINAL ---
+        archivo_existe = os.path.exists(ruta_destino_png)
+        archivo_valido = False
+        
+        if archivo_existe:
+            try:
+                tamano = os.path.getsize(ruta_destino_png)
+                if tamano > 1000:
+                    with open(ruta_destino_png, 'rb') as f:
+                        if f.read(8).startswith(b'\x89PNG\r\n\x1a\n'):
+                            archivo_valido = True
+            except:
+                pass
+        
         # --- INFORME FINAL ---
-        mensaje = (f"✅ ¡PROCESO FINALIZADO!\n\n"
-                   f"Límite de tiempo: {t_final:.2f} min\n"
-                   f"Línea Base: Corregida.\n"
-                   f"Picos detectados: {picos}\n"
-                   f"Busca la imagen en la misma carpeta que el Excel.")
+        mensaje_base = (f"✅ ¡PROCESO FINALIZADO!\n\n"
+                       f"Límite de tiempo: {t_final:.2f} min\n"
+                       f"Línea Base: Corregida.\n"
+                       f"Picos detectados: {picos}\n"
+                       f"Altura máxima: {alt_max:.1f} mAU\n\n")
         
-        messagebox.showinfo("Cromatograma Generado", mensaje)
+        if archivo_valido:
+            mensaje = mensaje_base + f"📍 Imagen guardada en:\n{os.path.dirname(ruta_destino_png)}\n\n📄 Archivo: {os.path.basename(ruta_destino_png)}"
+            messagebox.showinfo("Cromatograma Generado", mensaje)
+        elif archivo_existe:
+            mensaje = mensaje_base + f"⚠️ La imagen se guardó pero puede estar incompleta.\nRuta: {ruta_destino_png}"
+            messagebox.showwarning("Advertencia", mensaje)
+        else:
+            mensaje = mensaje_base + f"❌ No se pudo crear la imagen.\nVerifique permisos de escritura en:\n{os.path.dirname(ruta_destino_png)}"
+            messagebox.showerror("Error", mensaje)
         
     except Exception as e:
         messagebox.showerror("Error Crítico", f"Fallo en el procesamiento:\n{str(e)}")
     
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        # Limpieza
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
         gc.collect()
         btn_cargar.config(text="Cargar Excel", state="normal")
 
@@ -190,15 +241,54 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.1 (Ajuste Final de Eje X)")
-    root.geometry("400x320")
+    root.title("HPLC Gen v3.2 (Corrección de Creación de Imagen)")
+    root.geometry("450x350")
     
-    tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Línea base y límites de tiempo (AU3) corregidos.", font=("Arial", 9), fg="darkgreen").pack()
+    # Estilo mejorado
+    tk.Label(root, text="Generador de Cromatogramas", 
+             font=("Arial", 14, "bold"), pady=10).pack()
     
-    btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
+    tk.Label(root, text="Versión 3.2 - Creación instantánea de imagen", 
+             font=("Arial", 9), fg="darkgreen").pack()
+    
+    tk.Label(root, text="Soluciona el problema de retraso en la generación", 
+             font=("Arial", 8), fg="gray").pack(pady=5)
+    
+    btn_cargar = tk.Button(root, text="📂 Cargar Excel HPLC", 
+                          command=seleccionar_archivo, 
+                          padx=25, pady=12, 
+                          bg="#205ea6", fg="white", 
+                          font=("Arial", 11, "bold"),
+                          activebackground="#1a4d8c",
+                          cursor="hand2")
     btn_cargar.pack(pady=20)
 
-    tk.Label(root, text="Tiempo de Retención: B62 (Col 1)\nAltura Máxima: J62 (Col 9)", font=("Arial", 8), fg="gray").pack()
+    # Panel de información
+    info_frame = tk.Frame(root, relief=tk.GROOVE, borderwidth=1)
+    info_frame.pack(pady=10, padx=20, fill=tk.X)
+    
+    tk.Label(info_frame, text="📊 Datos utilizados:", 
+             font=("Arial", 9, "bold")).pack(anchor=tk.W, padx=10, pady=5)
+    
+    tk.Label(info_frame, text="• Tiempo de Retención: Fila 62, Columna B", 
+             font=("Arial", 8)).pack(anchor=tk.W, padx=20)
+    tk.Label(info_frame, text="• Altura Máxima: Fila 62, Columna J", 
+             font=("Arial", 8)).pack(anchor=tk.W, padx=20)
+    tk.Label(info_frame, text="• Tiempo Final: Fila 3, Columna AU", 
+             font=("Arial", 8)).pack(anchor=tk.W, padx=20)
+    
+    # Estado
+    estado_label = tk.Label(root, text="Listo", fg="green", font=("Arial", 8))
+    estado_label.pack(pady=5)
+    
+    # Actualizar estado del botón
+    def actualizar_estado():
+        if btn_cargar['state'] == 'disabled':
+            estado_label.config(text="Procesando...", fg="orange")
+        else:
+            estado_label.config(text="Listo", fg="green")
+        root.after(100, actualizar_estado)
+    
+    actualizar_estado()
     
     root.mainloop()
