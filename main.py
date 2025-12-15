@@ -7,8 +7,9 @@ from matplotlib.ticker import AutoMinorLocator
 from datetime import datetime, time
 import os
 import gc
-import shutil # Nuevo: Para copiar/mover archivos
-import tempfile # Nuevo: Para usar carpetas temporales de Windows
+import shutil
+import tempfile
+import time as time_module # Usaremos esto para forzar un pequeño retraso de red si es necesario
 
 # =========================================================
 # LÓGICA MATEMÁTICA
@@ -33,17 +34,11 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def procesar_archivo_local(local_filepath, t_final, hoja_leida):
-    """
-    Función que realiza todo el proceso de cálculo y graficado
-    usando exclusivamente el archivo en la ruta local.
-    """
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
     
-    # Eje X
     t = np.linspace(0, t_final, 15000)
     y_total = np.zeros_like(t) + 0.5 
 
-    # BARRIDO DE PICOS
     fila_inicio = 61
     picos_encontrados = 0
     altura_maxima_detectada = 0.0
@@ -111,7 +106,6 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     
     plt.tight_layout()
     
-    # Devolvemos la figura y los datos para guardar en la ruta final
     return fig, picos_encontrados, altura_maxima_detectada
 
 def seleccionar_archivo():
@@ -124,19 +118,14 @@ def seleccionar_archivo():
     btn_cargar.config(text="Procesando...", state="disabled")
     root.update()
     
-    # Variables de control
     ruta_temporal_completa = None
-    ruta_destino_png = None
 
     try:
-        # --- PARTE 1: COPIAR A RUTA TEMPORAL (VELOCIDAD) ---
-        
-        # 1. Crear carpeta temporal segura de Windows
+        # --- PARTE 1: COPIAR A RUTA TEMPORAL ---
         temp_dir = tempfile.mkdtemp()
         nombre_archivo = os.path.basename(archivo_red_original)
         ruta_temporal_completa = os.path.join(temp_dir, nombre_archivo)
         
-        # 2. Copiar el archivo de la red a la PC local (¡Rápido!)
         shutil.copy2(archivo_red_original, ruta_temporal_completa)
         
         # 3. Leer el tiempo final y determinar la hoja
@@ -152,32 +141,42 @@ def seleccionar_archivo():
         t_final = excel_a_minutos(raw_t_final)
         if not t_final or t_final <= 0.1: t_final = 10.0
         
-        # --- PARTE 2: PROCESAR EN LOCAL (MÁXIMO RENDIMIENTO) ---
+        # --- PARTE 2: PROCESAR EN LOCAL ---
         fig, picos, alt_max = procesar_archivo_local(ruta_temporal_completa, t_final, hoja_leida)
         
         # 4. Determinar la ruta final del PNG
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
-        # 5. Guardar la figura en la RUTA FINAL (Red)
-        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight')
-        plt.close(fig) # Cierre definitivo
-
-        # --- PARTE 3: INFORMAR Y LIMPIAR ---
+        # --- PARTE 3: GUARDAR Y FORZAR SINCRONIZACIÓN (NUEVO) ---
         
-        mensaje = (f"✅ ¡PROCESO FINALIZADO EN SEGUNDOS!\n\n"
-                   f"Tiempo de proceso (estimado): < 5 segundos\n"
+        # Guardamos en la ruta de red
+        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight')
+        plt.close(fig) 
+
+        # FUERZA EL SINCRONIZADO (CLAVE)
+        # 1. Abrimos el archivo guardado en modo apendice binario ('ab')
+        # 2. Forzamos la sincronización con el disco (o el servidor)
+        with open(ruta_destino_png, 'ab') as f:
+             # f.flush() # Ya lo hace el sistema operativo
+             os.fsync(f.fileno())
+
+        # OPCIONAL: Pausa mínima para permitir que la red se estabilice
+        time_module.sleep(0.05) 
+
+        # --- PARTE 4: INFORMAR Y LIMPIAR ---
+        mensaje = (f"✅ ¡PROCESO FINALIZADO!\n\n"
+                   f"Imagen GUARDADA Y SINCRONIZADA.\n"
                    f"Hoja leída: {hoja_leida}\n"
                    f"Picos detectados: {picos}\n"
                    f"Altura Máx: {alt_max:.1f} mAU\n\n"
-                   f"Imagen guardada en:\n{ruta_destino_png}")
+                   f"Busca la imagen en la misma carpeta que el Excel.")
         
         messagebox.showinfo("Cromatograma Generado", mensaje)
         
     except Exception as e:
-        messagebox.showerror("Error Crítico", f"Fallo en el procesamiento o la ruta de red:\n{str(e)}")
+        messagebox.showerror("Error Crítico", f"Fallo en la escritura o procesamiento:\n{str(e)}")
     
     finally:
-        # 6. Limpieza de la carpeta temporal (obligatorio)
         if ruta_temporal_completa and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
         gc.collect()
@@ -185,13 +184,13 @@ def seleccionar_archivo():
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v2.6 (Aislamiento de Red)")
+    root.title("HPLC Gen v2.7 (Sincronización Forzada)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Rápido)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="IMPORTANTE: El archivo será procesado localmente para máxima velocidad.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="El archivo se guardará y forzará la sincronización en el servidor.", font=("Arial", 9), fg="darkgreen").pack()
     
-    btn_cargar = tk.Button(root, text="Cargar Excel y Generar", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
+    btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
 
     tk.Label(root, text="Tiempo de Retención: B62 (Col 1)\nAltura Máxima: J62 (Col 9)", font=("Arial", 8), fg="gray").pack()
