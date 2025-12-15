@@ -6,11 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 from datetime import datetime, time
 import os
-import sys
-import gc  # Garbage Collector para limpieza de memoria RAM
+import gc
 
 # =========================================================
-# LÓGICA MATEMÁTICA (BLINDADA)
+# LÓGICA MATEMÁTICA
 # =========================================================
 def excel_a_minutos(valor):
     if pd.isna(valor): return None
@@ -32,28 +31,27 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def procesar_archivo(filepath):
-    # 1. LIMPIEZA PREVENTIVA (Elimina fantasmas anteriores)
+    # 1. LIMPIEZA DRÁSTICA DE MEMORIA
     plt.close('all') 
     
     HOJA_DATOS = "STD VALORACIÓN Y UD"
     nombre_hoja_leida = ""
+    altura_maxima_detectada = 0.0  # Para diagnóstico
     
     try:
-        # Intentar leer la hoja específica
         try:
             df = pd.read_excel(filepath, sheet_name=HOJA_DATOS, engine="openpyxl", header=None)
             nombre_hoja_leida = HOJA_DATOS
         except:
-            # Si falla, leer la primera
             df = pd.read_excel(filepath, engine="openpyxl", header=None)
             nombre_hoja_leida = "Primera Hoja (Default)"
 
-        # --- LECTURA DE DATOS ---
-        raw_t_final = df.iloc[2, 46] # AU3
+        # LEER TIEMPO FINAL
+        raw_t_final = df.iloc[2, 46] 
         t_final = excel_a_minutos(raw_t_final)
         if not t_final or t_final <= 0.1: t_final = 10.0
 
-        # Eje X
+        # REINICIAR ARREGLOS (Clave para evitar fantasmas)
         t = np.linspace(0, t_final, 15000)
         y_total = np.zeros_like(t) + 0.5 
 
@@ -81,19 +79,24 @@ def procesar_archivo(filepath):
                 y_pico = generar_pico_hplc_simetria(t, tR, sigma, H, Sym)
                 y_total += y_pico
                 picos_encontrados += 1
+                
+                # Guardar dato para diagnóstico
+                if H > altura_maxima_detectada: altura_maxima_detectada = H
 
         # RUIDO
-        ruido_estatico = np.random.normal(0, 0.18, len(t))
-        vibracion = 0.15 * np.sin(t * 12.0)
+        ruido = np.random.normal(0, 0.18, len(t))
         deriva = 0.3 * np.sin(t * 0.8)
-        y_total = y_total + ruido_estatico + vibracion + deriva
+        y_total = y_total + ruido + deriva
 
-        # --- GRAFICADO ---
+        # GRAFICADO
         plt.rcParams['font.family'] = 'sans-serif'
         plt.rcParams['font.sans-serif'] = ['Arial']
         plt.rcParams['font.size'] = 8
 
-        fig, ax = plt.subplots(figsize=(10, 4))
+        # USAR OBJETO FIGURA EXPLÍCITO (Evita cruce de gráficos)
+        fig = plt.figure(figsize=(10, 4))
+        ax = fig.add_subplot(111)
+        
         fig.patch.set_facecolor('white')
         ax.set_facecolor('white')
         ax.plot(t, y_total, color="#205ea6", linewidth=0.8)
@@ -105,78 +108,79 @@ def procesar_archivo(filepath):
 
         mis_ticks = np.linspace(0, t_final, 7)
         ax.set_xticks(mis_ticks)
-        labels_limpios = []
-        for x in mis_ticks:
-            if float(x).is_integer(): labels_limpios.append(f"{int(x)}")
-            else: labels_limpios.append(f"{x:.1f}")
-        labels_limpios[-1] = "min"
-        ax.set_xticklabels(labels_limpios)
+        labels = [f"{int(x)}" if float(x).is_integer() else f"{x:.1f}" for x in mis_ticks]
+        labels[-1] = "min"
+        ax.set_xticklabels(labels)
 
         ax.set_ylabel("mAU", loc='top', rotation=0, fontsize=8, labelpad=-20)
         ax.xaxis.set_minor_locator(AutoMinorLocator(5))
         ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-        ax.tick_params(which='major', direction='out', length=4, width=0.6, colors='black', top=False, right=False)
-        ax.tick_params(which='minor', direction='out', length=2, width=0.5, colors='black', top=False, right=False)
+        ax.tick_params(which='major', direction='out', length=4, width=0.6, colors='black')
+        ax.tick_params(which='minor', direction='out', length=2, width=0.5, colors='black')
         for spine in ax.spines.values():
             spine.set_linewidth(0.6)
             spine.set_color('black')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        
         plt.tight_layout()
 
-        # Guardado
+        # GUARDAR USANDO EL OBJETO 'FIG' (No plt)
         output_path = os.path.splitext(filepath)[0] + "_cromatograma.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
         
-        return output_path, nombre_hoja_leida, picos_encontrados
+        # Eliminar archivo previo si existe para forzar escritura nueva
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except:
+                pass 
+
+        fig.savefig(output_path, dpi=300, bbox_inches='tight')
+        
+        # CERRAR FIGURA ESPECÍFICA
+        plt.close(fig)
+        
+        return output_path, nombre_hoja_leida, picos_encontrados, altura_maxima_detectada, t_final
 
     except Exception as e:
         raise e
     finally:
-        # LIMPIEZA TOTAL OBLIGATORIA
         plt.close('all')
-        gc.collect() # Fuerza a Windows a liberar la RAM
+        gc.collect()
 
 # =========================================================
-# INTERFAZ GRÁFICA (GUI)
+# GUI CON DIAGNÓSTICO
 # =========================================================
 def seleccionar_archivo():
-    archivo = filedialog.askopenfilename(
-        title="Selecciona el archivo Excel HPLC",
-        filetypes=[("Excel Files", "*.xlsm *.xlsx")]
-    )
+    archivo = filedialog.askopenfilename(title="Selecciona Excel", filetypes=[("Excel Files", "*.xlsm *.xlsx")])
     if archivo:
         btn_cargar.config(text="Procesando...", state="disabled")
         root.update()
         try:
-            ruta, hoja, picos = procesar_archivo(archivo)
+            ruta, hoja, picos, alt_max, t_fin = procesar_archivo(archivo)
             
-            # Mensaje detallado para control de calidad
-            mensaje = (f"✅ ¡Éxito!\n\n"
-                       f"📂 Archivo: {os.path.basename(archivo)}\n"
-                       f"📄 Hoja leída: {hoja}\n"
-                       f"📊 Picos detectados: {picos}\n\n"
-                       f"Guardado en:\n{ruta}")
+            # MENSAJE DE AUDITORÍA (Aquí verás qué leyó realmente)
+            mensaje = (f"✅ Proceso Exitoso\n\n"
+                       f"📄 Archivo: {os.path.basename(archivo)}\n"
+                       f"📑 Hoja: {hoja}\n"
+                       f"📊 Picos: {picos}\n"
+                       f"📏 T. Final: {t_fin} min\n"
+                       f"📈 Altura Máx Leída: {alt_max:.1f} mAU\n\n"
+                       f"Si estos datos son del archivo viejo, REVISA QUE HAYAS GUARDADO EL EXCEL.\n\n"
+                       f"Imagen guardada en:\n{ruta}")
             
-            messagebox.showinfo("Cromatograma Generado", mensaje)
+            messagebox.showinfo("Reporte de Generación", mensaje)
             
         except Exception as e:
-            messagebox.showerror("Error Crítico", f"No se pudo procesar:\n{str(e)}")
+            messagebox.showerror("Error", f"{str(e)}")
         finally:
-            btn_cargar.config(text="Cargar Excel y Generar", state="normal")
+            btn_cargar.config(text="Cargar Excel", state="normal")
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("Generador HPLC v2.4 (Blindado)")
-    root.geometry("400x250")
-    
-    lbl_instruccion = tk.Label(root, text="Selecciona tu archivo Excel", font=("Arial", 12), pady=20)
-    lbl_instruccion.pack()
-
-    btn_cargar = tk.Button(root, text="Cargar Excel y Generar", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 10, "bold"))
-    btn_cargar.pack()
-
-    lbl_info = tk.Label(root, text="Modo Técnico Activado\nLimpieza de memoria automática", font=("Arial", 8), fg="gray", pady=10)
-    lbl_info.pack(side="bottom")
-
+    root.title("HPLC Gen v2.5 (Diagnóstico)")
+    root.geometry("400x300")
+    tk.Label(root, text="Generador de Cromatogramas", font=("Arial", 14, "bold"), pady=15).pack()
+    tk.Label(root, text="Asegúrate de GUARDAR tu Excel antes de cargarlo.", fg="red").pack()
+    tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, bg="#205ea6", fg="white", font=("Arial", 11), padx=10, pady=5).pack(pady=20)
     root.mainloop()
