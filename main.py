@@ -32,34 +32,46 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     y[t > tR] = H * np.exp(-0.5 * ((t[t > tR] - tR) / sigma_R) ** 2)
     return y
 
-def calcular_pasos_y(altura_max):
-    """Calcula los pasos para el eje Y similar al eje X"""
-    if altura_max <= 10: 
-        paso = 1
-    elif altura_max <= 50: 
-        paso = 5
-    elif altura_max <= 100: 
-        paso = 10
-    elif altura_max <= 200: 
-        paso = 20
-    elif altura_max <= 500: 
-        paso = 50
-    elif altura_max <= 1000: 
-        paso = 100
-    elif altura_max <= 2000: 
-        paso = 200
-    elif altura_max <= 5000: 
-        paso = 500
-    elif altura_max <= 10000: 
-        paso = 1000
-    elif altura_max <= 20000: 
-        paso = 2000
-    elif altura_max <= 50000: 
-        paso = 5000
-    else: 
-        paso = 10000  # Para alturas muy grandes
+def calcular_limite_y_escalado(max_data):
+    """Calcula el límite superior y el paso de forma inteligente."""
+    # 1. Margen de 10% sobre la altura real
+    target_max = max_data * 1.1
     
-    return paso
+    if target_max <= 0: return 10, 2 # Caso sin picos o error
+
+    # 2. Calcular un paso ideal para obtener entre 5 y 7 divisiones
+    # Dividimos por 5 para obtener un paso que nos dé aprox 5 divisiones
+    ideal_step = target_max / 5.0
+    
+    # 3. Normalizar el paso a un número "limpio" (1, 2, 5, 10, 20, 50, etc.)
+    
+    # Encontrar la potencia de 10 más cercana hacia abajo (ej: 66 -> 10)
+    pow10 = 10**math.floor(math.log10(ideal_step))
+    
+    # Candidatos limpios: 1x, 2x, 5x la potencia de 10
+    candidatos = [1 * pow10, 2 * pow10, 5 * pow10]
+    
+    # Si el paso es muy pequeño (ej: 0.1, 0.5)
+    if ideal_step < 1:
+        candidatos = [0.1 * pow10, 0.2 * pow10, 0.5 * pow10, 1.0 * pow10]
+        candidatos = [c for c in candidatos if c > 0] # Evitar cero
+    
+    # Elegir el candidato más pequeño que sea mayor o igual al ideal_step
+    paso_y = min([c for c in candidatos if c >= ideal_step])
+
+    # 4. Calcular el límite superior final redondeado al paso
+    limite_superior_y = math.ceil(target_max / paso_y) * paso_y
+    
+    # Aseguramos que el límite no sea menor que 10 mAU
+    if limite_superior_y < 10:
+        if target_max > 5:
+            limite_superior_y = 10
+            paso_y = 2
+        else: # Picos muy pequeños
+            limite_superior_y = math.ceil(target_max * 2 / 0.5) * 0.5 # A pasos de 0.5
+            paso_y = 0.5
+            
+    return limite_superior_y, paso_y
 
 # =========================================================
 # PROCESAMIENTO
@@ -73,9 +85,6 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     fila_inicio = 61
     picos_encontrados = 0
     altura_maxima_detectada = 0.0
-    ancho_promedio = 0.0
-    simetria_promedio = 0.0
-    picos_con_datos = 0
     
     for i in range(50):
         fila_actual = fila_inicio + i
@@ -97,56 +106,42 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             y_pico = generar_pico_hplc_simetria(t, tR, sigma, H, Sym)
             y_total += y_pico
             picos_encontrados += 1
-            
-            altura_maxima_detectada = max(altura_maxima_detectada, H)
-            if W > 0:
-                ancho_promedio += W
-                picos_con_datos += 1
-            if Sym > 0:
-                simetria_promedio += Sym
-    
-    if picos_con_datos > 0:
-        ancho_promedio = ancho_promedio / picos_con_datos
-        simetria_promedio = simetria_promedio / picos_con_datos
+            if H > altura_maxima_detectada: altura_maxima_detectada = H
 
-    # ===== RUIDO + DERIVA ESTABLE =====
+    # ===== RUIDO + DERIVA ESTABLE (Línea Base Corregida) =====
     ruido_estatico = np.random.normal(0, 0.15, len(t))
     vibracion_y_deriva = 0.25 * np.sin(t * 1.5) + 0.15 * np.sin(t * 12.0)
     y_total += ruido_estatico + vibracion_y_deriva
 
-    # GRAFICADO CON ESCALA Y MEJORADA
+    # GRAFICADO
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(t, y_total, color="#205ea6", linewidth=0.8)
 
-    max_y = np.max(y_total)
-    
-    # --- ESCALA Y MEJORADA (similar al eje X) ---
-    # Calcular paso apropiado para Y
-    paso_y = calcular_pasos_y(max_y)
-    
-    # Calcular límite superior redondeado hacia arriba
-    limite_superior_y = math.ceil(max_y * 1.1 / paso_y) * paso_y
-    
-    # Asegurar un mínimo de 100 si es muy bajo
-    if limite_superior_y < 100 and max_y > 10:
-        limite_superior_y = 100
-    elif max_y <= 10:
-        limite_superior_y = max(20, math.ceil(max_y * 1.5))
-    
-    ax.set_xlim(0, t_final)
+    # --- CORRECCIÓN CLAVE 1: ESCALA Y ---
+    max_y_total = np.max(y_total)
+    limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
+
     ax.set_ylim(0, limite_superior_y)
     
     # Establecer ticks principales para Y
     ticks_y = np.arange(0, limite_superior_y + paso_y, paso_y)
-    # Filtrar ticks que estén dentro del límite
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
     ax.set_yticks(ticks_y)
     
-    # Formatear etiquetas Y (enteros sin decimales)
-    ax.set_yticklabels([str(int(t)) if t >= 10 else f"{t:.0f}" for t in ticks_y])
+    # Formatear etiquetas Y (enteros sin decimales, o 1 decimal para valores muy bajos)
+    etiquetas_y = []
+    for t in ticks_y:
+        if t >= 10:
+            etiquetas_y.append(str(int(t)))
+        else:
+            etiquetas_y.append(f"{t:.1f}")
+    ax.set_yticklabels(etiquetas_y)
+
+
+    # --- CORRECCIÓN CLAVE 2: ESCALA X ---
+    ax.set_xlim(0, t_final) 
     
-    # --- EJE X (MANTENIENDO FORMATO ORIGINAL) ---
     if t_final <= 10: paso_x = 1
     elif t_final <= 30: paso_x = 5
     elif t_final <= 60: paso_x = 10
@@ -171,29 +166,26 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             labels_x.append(f"{x:.1f}")
 
     ax.set_xticklabels(labels_x)
-
-    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-20)
     
-    # SUBDIVISIONES (4 líneas intermedias como ya se viene manejando)
-    ax.xaxis.set_minor_locator(AutoMinorLocator(5))  # 4 líneas menores entre ticks principales
-    ax.yaxis.set_minor_locator(AutoMinorLocator(5))  # 4 líneas menores entre ticks principales
+    # --- CORRECCIÓN CLAVE 3: POSICIÓN ETIQUETA "mAU" ---
+    # Se ajusta el labelpad para evitar el solapamiento.
+    ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-15) 
     
+    # --- SUBDIVISIONES (Mantenidas) ---
+    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     
     plt.tight_layout()
-    return fig, picos_encontrados, altura_maxima_detectada, ancho_promedio, simetria_promedio, limite_superior_y
+    return fig, picos_encontrados, altura_maxima_detectada, limite_superior_y
 
 # =========================================================
-# INTERFAZ
+# INTERFAZ (Sincronización de Red)
 # =========================================================
 def seleccionar_archivo():
-    archivo_red_original = filedialog.askopenfilename(
-        title="Selecciona Excel HPLC", 
-        filetypes=[("Excel Files", "*.xlsx *.xlsm")]
-    )
-    if not archivo_red_original: 
-        return
+    archivo_red_original = filedialog.askopenfilename(title="Selecciona Excel HPLC", filetypes=[("Excel Files", "*.xlsx *.xlsm")])
+    if not archivo_red_original: return
 
     btn_cargar.config(text="Procesando...", state="disabled")
     root.update()
@@ -201,6 +193,7 @@ def seleccionar_archivo():
     temp_dir = tempfile.mkdtemp()
     
     try:
+        # --- LECTURA INICIAL Y COPIA LOCAL ---
         local_filepath = os.path.join(temp_dir, os.path.basename(archivo_red_original))
         shutil.copy2(archivo_red_original, local_filepath)
         
@@ -209,82 +202,41 @@ def seleccionar_archivo():
             df_temp = pd.read_excel(local_filepath, sheet_name=HOJA_DATOS, header=None)
             hoja_leida = HOJA_DATOS
         except:
-            try:
-                df_temp = pd.read_excel(local_filepath, header=None)
-                hoja_leida = "Primera Hoja (Default)"
-            except Exception as e:
-                raise Exception(f"No se puede leer el archivo Excel: {str(e)}")
+            df_temp = pd.read_excel(local_filepath, header=None)
+            hoja_leida = "Primera Hoja (Default)"
             
         raw_t_final = df_temp.iloc[2, 46]
         t_final = excel_a_minutos(raw_t_final) or 10
         
-        fig, picos, alt_max, ancho_prom, simetria_prom, limite_y = procesar_archivo_local(
-            local_filepath, t_final, hoja_leida
-        )
+        # --- PROCESAMIENTO ---
+        fig, picos, alt_max, limite_y = procesar_archivo_local(local_filepath, t_final, hoja_leida)
         
+        # --- GUARDADO EN RED Y SINCRONIZACIÓN FORZADA ---
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
-        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight', metadata={'CreationDate': None})
-        plt.close(fig)
+        fig.savefig(ruta_destino_png, dpi=300, bbox_inches='tight')
+        plt.close(fig) 
+
+        with open(ruta_destino_png, 'ab') as f:
+             os.fsync(f.fileno())
         
-        # --- VERIFICACIÓN ---
-        max_intentos = 15
-        intento = 0
-        archivo_creado = False
-        
-        while intento < max_intentos and not archivo_creado:
-            try:
-                if os.path.exists(ruta_destino_png):
-                    tamano = os.path.getsize(ruta_destino_png)
-                    if tamano > 1000:
-                        with open(ruta_destino_png, 'rb') as f:
-                            if f.read(8).startswith(b'\x89PNG\r\n\x1a\n'):
-                                archivo_creado = True
-                                break
-            except:
-                pass
-            
-            time_module.sleep(0.3 * (intento + 1))
-            intento += 1
-            root.update()
-        
-        # --- INFORME MEJORADO ---
+        time_module.sleep(1) 
+
+        # --- INFORME FINAL ---
         mensaje = (f"✅ ¡PROCESO FINALIZADO!\n\n"
-                  f"📊 DATOS UTILIZADOS:\n"
-                  f"-------------------\n"
-                  f"• Tiempo total: {t_final:.2f} min\n"
-                  f"• Picos detectados: {picos}\n"
-                  f"• Altura máxima: {alt_max:.1f} mAU\n")
+                   f"Límite de tiempo: {t_final:.2f} min\n"
+                   f"Picos detectados: {picos}\n"
+                   f"Altura Máx detectada: {alt_max:.1f} mAU\n"
+                   f"Escala Y (Límite): {limite_y} mAU\n\n"
+                   f"Busca la imagen en la misma carpeta que el Excel.")
         
-        if ancho_prom > 0:
-            mensaje += f"• Ancho promedio: {ancho_prom:.3f} min\n"
-        
-        if simetria_prom > 0:
-            if simetria_prom < 0.9: clasif = "Fronting"
-            elif simetria_prom > 1.1: clasif = "Tailing"
-            else: clasif = "Normal"
-            mensaje += f"• Simetría promedio: {simetria_prom:.3f} ({clasif})\n"
-        
-        mensaje += f"\n📈 ESCALAS APLICADAS:\n"
-        mensaje += f"• Eje X: 0 a {t_final:.1f} min\n"
-        mensaje += f"• Eje Y: 0 a {limite_y} mAU (autoajustado)\n"
-        mensaje += f"• Subdivisiones: 4 líneas entre cada tick\n"
-        
-        mensaje += f"\n📁 Imagen guardada en:\n{os.path.dirname(ruta_destino_png)}"
-        
-        if os.path.exists(ruta_destino_png):
-            messagebox.showinfo("Cromatograma Generado", mensaje)
-        else:
-            messagebox.showerror("Error", "No se pudo crear la imagen")
+        messagebox.showinfo("Cromatograma Generado", mensaje)
         
     except Exception as e:
         messagebox.showerror("Error Crítico", f"Fallo en el procesamiento:\n{str(e)}")
     
     finally:
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
         gc.collect()
         btn_cargar.config(text="Cargar Excel", state="normal")
 
@@ -293,37 +245,15 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.5 (Escalas Mejoradas)")
-    root.geometry("500x450")
+    root.title("HPLC Gen v3.2 (Escala Y Definitiva)")
+    root.geometry("400x320")
     
-    tk.Label(root, text="Generador de Cromatogramas HPLC", 
-             font=("Arial", 14, "bold"), pady=10).pack()
+    tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
+    tk.Label(root, text="Escalado Y garantiza 5 divisiones enteras sobre el pico máximo.", font=("Arial", 9), fg="darkgreen").pack()
     
-    tk.Label(root, text="Versión 3.5 - Escalas X/Y coherentes con autoajuste", 
-             font=("Arial", 9), fg="darkgreen").pack()
-    
-    # Información de escalas
-    escalas_frame = tk.LabelFrame(root, text=" 📈 ESCALAS AUTO-AJUSTABLES", 
-                                 font=("Arial", 10, "bold"), padx=10, pady=10)
-    escalas_frame.pack(pady=10, padx=20, fill=tk.X)
-    
-    tk.Label(escalas_frame, text="• Eje X: escala de tiempo con ticks inteligentes", 
-             font=("Arial", 9)).pack(anchor=tk.W, pady=2)
-    tk.Label(escalas_frame, text="• Eje Y: escala de mAU autoajustable por altura", 
-             font=("Arial", 9)).pack(anchor=tk.W, pady=2)
-    tk.Label(escalas_frame, text="• 4 subdivisiones entre cada tick principal", 
-             font=("Arial", 9)).pack(anchor=tk.W, pady=2)
-    tk.Label(escalas_frame, text="• Límite Y: 10-20% sobre altura máxima detectada", 
-             font=("Arial", 8), fg="blue").pack(anchor=tk.W, pady=5)
-    
-    btn_cargar = tk.Button(root, text="📂 Cargar Excel HPLC", 
-                          command=seleccionar_archivo, 
-                          padx=25, pady=15, 
-                          bg="#205ea6", fg="white", 
-                          font=("Arial", 12, "bold"))
+    btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
-    
-    estado_label = tk.Label(root, text="Estado: Listo", fg="green", font=("Arial", 9))
-    estado_label.pack(pady=10)
+
+    tk.Label(root, text="Tiempo de Retención: B62 (Col 1)\nAltura Máxima: J62 (Col 9)", font=("Arial", 8), fg="gray").pack()
     
     root.mainloop()
