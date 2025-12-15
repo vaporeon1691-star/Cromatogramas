@@ -32,16 +32,13 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     sigma_R = simetria * sigma_L
 
     y = np.zeros_like(t)
-    mask_L = t <= tR
-    mask_R = t > tR
-
-    y[mask_L] = H * np.exp(-0.5 * ((t[mask_L] - tR) / sigma_L) ** 2)
-    y[mask_R] = H * np.exp(-0.5 * ((t[mask_R] - tR) / sigma_R) ** 2)
+    y[t <= tR] = H * np.exp(-0.5 * ((t[t <= tR] - tR) / sigma_L) ** 2)
+    y[t > tR] = H * np.exp(-0.5 * ((t[t > tR] - tR) / sigma_R) ** 2)
 
     return y
 
 # =========================================================
-# PROCESAMIENTO PRINCIPAL
+# PROCESAMIENTO
 # =========================================================
 def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
@@ -50,36 +47,36 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     y_total = np.zeros_like(t) + 0.5
 
     fila_inicio = 61
-    picos_encontrados = 0
-    altura_maxima_detectada = 0.0
+    picos = 0
+    altura_max = 0.0
 
     for i in range(50):
-        fila_actual = fila_inicio + i
-
-        dato_tR = df.iloc[fila_actual, 1]
-        tR = excel_a_minutos(dato_tR)
+        fila = fila_inicio + i
+        tR = excel_a_minutos(df.iloc[fila, 1])
         if tR is None:
             break
 
-        raw_H = df.iloc[fila_actual, 9]
-        raw_Sym = df.iloc[fila_actual, 14]
-        raw_W = df.iloc[fila_actual, 17]
-
-        H = float(raw_H) if pd.notna(raw_H) else 0.0
-        W = float(raw_W) if pd.notna(raw_W) else 0.0
-        Sym = float(raw_Sym) if pd.notna(raw_Sym) else 1.0
+        H = float(df.iloc[fila, 9]) if pd.notna(df.iloc[fila, 9]) else 0
+        W = float(df.iloc[fila, 17]) if pd.notna(df.iloc[fila, 17]) else 0
+        Sym = float(df.iloc[fila, 14]) if pd.notna(df.iloc[fila, 14]) else 1
 
         if H > 0:
             sigma = W / 2.355 if W > 0 else t_final / 200
             y_total += generar_pico_hplc_simetria(t, tR, sigma, H, Sym)
-            picos_encontrados += 1
-            altura_maxima_detectada = max(altura_maxima_detectada, H)
+            picos += 1
+            altura_max = max(altura_max, H)
 
-    # Ruido y deriva
-    y_total += np.random.normal(0, 0.18, len(t))
-    y_total += 0.3 * np.sin(t * 0.8)
+    # ===== Ruido + deriva realista =====
+    ruido = np.random.normal(0, 0.15, len(t))
+    amplitud_deriva = 0.6
+    tau = t_final / 3
+    deriva_lenta = amplitud_deriva * (1 - np.exp(-t / tau))
+    rw = np.cumsum(np.random.normal(0, 0.002, len(t)))
+    rw = np.convolve(rw, np.ones(300)/300, mode="same")
 
-    # Gráfica
+    y_total += ruido + deriva_lenta + rw
+
+    # ===== Gráfica =====
     plt.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial"],
@@ -92,31 +89,41 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     ax.set_xlim(0, t_final)
     ax.set_ylim(0, max(100, np.max(y_total) * 1.1))
 
-    ticks = np.linspace(0, t_final, 7)
+    # Escala X coherente
+    if t_final <= 10:
+        paso = 1
+    elif t_final <= 30:
+        paso = 5
+    elif t_final <= 60:
+        paso = 10
+    else:
+        paso = 20
+
+    ticks = np.arange(0, t_final + paso, paso)
     ax.set_xticks(ticks)
-    labels = [f"{int(x)}" if x.is_integer() else f"{x:.1f}" for x in ticks]
-    labels[-1] = "min"
+
+    labels = [str(int(x)) if i < len(ticks)-1 else "min"
+              for i, x in enumerate(ticks)]
     ax.set_xticklabels(labels)
 
     ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-20)
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     ax.yaxis.set_minor_locator(AutoMinorLocator(5))
-
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     plt.tight_layout()
-    return fig, picos_encontrados, altura_maxima_detectada
+    return fig, picos, altura_max
 
 # =========================================================
 # INTERFAZ
 # =========================================================
 def seleccionar_archivo():
-    archivo_origen = filedialog.askopenfilename(
-        title="Selecciona el archivo Excel HPLC",
+    archivo = filedialog.askopenfilename(
+        title="Selecciona Excel HPLC",
         filetypes=[("Excel Files", "*.xlsx *.xlsm")]
     )
-    if not archivo_origen:
+    if not archivo:
         return
 
     btn_cargar.config(text="Procesando...", state="disabled")
@@ -125,43 +132,35 @@ def seleccionar_archivo():
     temp_dir = tempfile.mkdtemp()
 
     try:
-        archivo_local = os.path.join(temp_dir, os.path.basename(archivo_origen))
-        shutil.copy2(archivo_origen, archivo_local)
+        local = os.path.join(temp_dir, os.path.basename(archivo))
+        shutil.copy2(archivo, local)
 
         HOJA = "STD VALORACIÓN Y UD"
         try:
-            df_temp = pd.read_excel(archivo_local, sheet_name=HOJA, header=None)
-            hoja_leida = HOJA
+            df = pd.read_excel(local, sheet_name=HOJA, header=None)
+            hoja = HOJA
         except:
-            df_temp = pd.read_excel(archivo_local, header=None)
-            hoja_leida = "Primera hoja"
+            df = pd.read_excel(local, header=None)
+            hoja = "Primera hoja"
 
-        raw_t_final = df_temp.iloc[2, 46]
-        t_final = excel_a_minutos(raw_t_final) or 10.0
+        t_final = excel_a_minutos(df.iloc[2, 46]) or 10
+        fig, picos, alt = procesar_archivo_local(local, t_final, hoja)
 
-        fig, picos, alt_max = procesar_archivo_local(archivo_local, t_final, hoja_leida)
-
-        # 🔒 Guardar primero en LOCAL
-        ruta_png_temp = os.path.join(temp_dir, "cromatograma_temp.png")
-        fig.savefig(ruta_png_temp, dpi=300, bbox_inches="tight")
+        png_temp = os.path.join(temp_dir, "crom.png")
+        fig.savefig(png_temp, dpi=300, bbox_inches="tight")
         plt.close(fig)
 
-        # 🔥 Mover al destino final (dispara refresco)
-        ruta_destino = os.path.splitext(archivo_origen)[0] + "_cromatograma.png"
-        shutil.move(ruta_png_temp, ruta_destino)
+        destino = os.path.splitext(archivo)[0] + "_cromatograma.png"
+        shutil.move(png_temp, destino)
 
         messagebox.showinfo(
             "Proceso finalizado",
-            f"✔ Cromatograma generado correctamente\n\n"
-            f"Hoja: {hoja_leida}\n"
-            f"Picos detectados: {picos}\n"
-            f"Altura máxima: {alt_max:.1f} mAU\n\n"
-            f"Ubicación:\n{ruta_destino}"
+            f"✔ Cromatograma generado\n\nHoja: {hoja}\n"
+            f"Picos: {picos}\nAltura máx: {alt:.1f} mAU"
         )
 
     except Exception as e:
-        messagebox.showerror("Error crítico", str(e))
-
+        messagebox.showerror("Error", str(e))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
         gc.collect()
@@ -172,29 +171,22 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v2.8 – Escritura Segura")
+    root.title("HPLC Gen v2.9 – Deriva Realista")
     root.geometry("420x320")
 
     tk.Label(root, text="Generador de Cromatogramas HPLC",
              font=("Arial", 12, "bold"), pady=10).pack()
-
-    tk.Label(root, text="Guardado seguro para carpetas de red / OneDrive",
+    tk.Label(root, text="Deriva instrumental realista",
              font=("Arial", 9), fg="darkgreen").pack()
 
-    btn_cargar = tk.Button(
-        root,
-        text="Cargar Excel",
-        command=seleccionar_archivo,
-        bg="#205ea6",
-        fg="white",
-        font=("Arial", 11, "bold"),
-        padx=20,
-        pady=10
-    )
+    btn_cargar = tk.Button(root, text="Cargar Excel",
+                           command=seleccionar_archivo,
+                           bg="#205ea6", fg="white",
+                           font=("Arial", 11, "bold"),
+                           padx=20, pady=10)
     btn_cargar.pack(pady=20)
 
-    tk.Label(root,
-             text="TR: B62 | Altura: J62 | Simetría: O62 | Ancho: R62",
+    tk.Label(root, text="TR B62 | Altura J62 | Simetría O62 | Ancho R62",
              font=("Arial", 8), fg="gray").pack()
 
     root.mainloop()
