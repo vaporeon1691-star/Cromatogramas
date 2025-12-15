@@ -33,44 +33,46 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
-    """Calcula el límite superior y el paso de forma inteligente."""
-    # 1. Margen de 10% sobre la altura real
-    target_max = max_data * 1.1
-    
-    if target_max <= 0: return 10, 2 # Caso sin picos o error
+    """Calcula el límite superior y el paso de forma inteligente (5-7 divisiones)."""
+    target_max = max_data * 1.1 # Margen del 10%
+    if target_max <= 0: return 10, 2
 
-    # 2. Calcular un paso ideal para obtener entre 5 y 7 divisiones
-    # Dividimos por 5 para obtener un paso que nos dé aprox 5 divisiones
-    ideal_step = target_max / 5.0
+    ideal_step = target_max / 5.0 # Objetivo: 5 divisiones
+
+    # Encontrar la potencia de 10 más cercana
+    if ideal_step == 0: pow10 = 1
+    else: pow10 = 10**math.floor(math.log10(ideal_step))
     
-    # 3. Normalizar el paso a un número "limpio" (1, 2, 5, 10, 20, 50, etc.)
-    
-    # Encontrar la potencia de 10 más cercana hacia abajo (ej: 66 -> 10)
-    pow10 = 10**math.floor(math.log10(ideal_step))
-    
-    # Candidatos limpios: 1x, 2x, 5x la potencia de 10
+    # Candidatos limpios: 1x, 2x, 5x
     candidatos = [1 * pow10, 2 * pow10, 5 * pow10]
     
-    # Si el paso es muy pequeño (ej: 0.1, 0.5)
+    # Manejar pasos fraccionarios (ej: 0.1, 0.5)
     if ideal_step < 1:
-        candidatos = [0.1 * pow10, 0.2 * pow10, 0.5 * pow10, 1.0 * pow10]
-        candidatos = [c for c in candidatos if c > 0] # Evitar cero
-    
+        candidatos = [0.1, 0.2, 0.5, 1.0]
+        pow10 = 1
+
     # Elegir el candidato más pequeño que sea mayor o igual al ideal_step
     paso_y = min([c for c in candidatos if c >= ideal_step])
+    
+    # Corrección para pasos muy pequeños que se repiten
+    if paso_y <= 0.001: paso_y = 0.5 # Default de seguridad para ruido
 
-    # 4. Calcular el límite superior final redondeado al paso
+    # Calcular el límite superior final redondeado al paso
     limite_superior_y = math.ceil(target_max / paso_y) * paso_y
     
-    # Aseguramos que el límite no sea menor que 10 mAU
+    # Aseguramos un mínimo de 10 mAU y ajustamos pasos para valores muy bajos
     if limite_superior_y < 10:
         if target_max > 5:
             limite_superior_y = 10
             paso_y = 2
-        else: # Picos muy pequeños
-            limite_superior_y = math.ceil(target_max * 2 / 0.5) * 0.5 # A pasos de 0.5
-            paso_y = 0.5
-            
+        else: # Picos muy pequeños, a pasos de 1 mAU o 0.5 mAU
+            if target_max > 1:
+                limite_superior_y = math.ceil(target_max / 1.0) * 1.0
+                paso_y = 0.5
+            else:
+                limite_superior_y = math.ceil(target_max / 0.5) * 0.5
+                paso_y = 0.1
+
     return limite_superior_y, paso_y
 
 # =========================================================
@@ -116,30 +118,32 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     # GRAFICADO
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(t, y_total, color="#205ea6", linewidth=0.8)
+    
+    # --- CORRECCIÓN NUEVA: GROSOR DE LÍNEA ---
+    ax.plot(t, y_total, color="#205ea6", linewidth=0.6) # Línea más fina (0.6) para nitidez en escalas bajas
 
-    # --- CORRECCIÓN CLAVE 1: ESCALA Y ---
+    # --- ESCALA Y ---
     max_y_total = np.max(y_total)
     limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
 
     ax.set_ylim(0, limite_superior_y)
     
-    # Establecer ticks principales para Y
     ticks_y = np.arange(0, limite_superior_y + paso_y, paso_y)
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
     ax.set_yticks(ticks_y)
     
-    # Formatear etiquetas Y (enteros sin decimales, o 1 decimal para valores muy bajos)
+    # Formatear etiquetas Y (1 decimal si es < 10, sino entero)
     etiquetas_y = []
-    for t in ticks_y:
-        if t >= 10:
-            etiquetas_y.append(str(int(t)))
-        else:
-            etiquetas_y.append(f"{t:.1f}")
+    for t_val in ticks_y:
+        if t_val >= 10 and float(t_val).is_integer():
+            etiquetas_y.append(str(int(t_val)))
+        elif t_val >= 1:
+            etiquetas_y.append(f"{t_val:.1f}")
+        else: # Para valores muy bajos (0.5, 0.1)
+            etiquetas_y.append(f"{t_val:.1f}")
     ax.set_yticklabels(etiquetas_y)
 
-
-    # --- CORRECCIÓN CLAVE 2: ESCALA X ---
+    # --- ESCALA X (Mantenida) ---
     ax.set_xlim(0, t_final) 
     
     if t_final <= 10: paso_x = 1
@@ -167,8 +171,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
 
     ax.set_xticklabels(labels_x)
     
-    # --- CORRECCIÓN CLAVE 3: POSICIÓN ETIQUETA "mAU" ---
-    # Se ajusta el labelpad para evitar el solapamiento.
+    # --- CORRECCIÓN ETIQUETA "mAU" ---
     ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-15) 
     
     # --- SUBDIVISIONES (Mantenidas) ---
@@ -245,11 +248,11 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.2 (Escala Y Definitiva)")
+    root.title("HPLC Gen v3.3 (Estética Fina)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Escalado Y garantiza 5 divisiones enteras sobre el pico máximo.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Línea base fina y escalas Y ajustadas automáticamente.", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
