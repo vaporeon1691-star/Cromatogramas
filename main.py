@@ -33,33 +33,38 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
-    """Calcula el límite superior y el paso de forma inteligente (5-7 divisiones) con blindaje."""
-    # Blindaje: Asegurar un valor mínimo para la escala Y
+    """Calcula el límite superior y el paso de forma inteligente (5-7 divisiones) con BLINDAJE."""
+    # Blindaje inicial
     if max_data < 0.5: 
         max_data = 0.5 
 
     target_max = max_data * 1.1 # Margen del 10%
-    ideal_step = target_max / 5.0 # Objetivo: 5 divisiones
+    ideal_step = target_max / 5.0 
 
-    # Cálculo de potencia de 10
-    if ideal_step <= 0: pow10 = 1
-    else: pow10 = 10**math.floor(math.log10(ideal_step))
+    # --- Generación de candidatos de pasos limpios ---
     
-    # Candidatos limpios: 1x, 2x, 5x. Incluye 0.5, 0.2, 0.1 para escalas bajas
+    try:
+        if ideal_step <= 0: pow10 = 1
+        else: pow10 = 10**math.floor(math.log10(ideal_step))
+    except ValueError:
+        pow10 = 1 
+    
     candidatos_raw = [1 * pow10, 2 * pow10, 5 * pow10]
     
     if ideal_step < 1:
-        candidatos_raw.extend([0.1, 0.2, 0.5, 1.0])
-        candidatos_raw = [c for c in candidatos_raw if c > 0.001]
+        candidatos_raw.extend([0.1, 0.2, 0.5])
+    
+    if pow10 >= 10:
+        candidatos_raw.extend([10 * pow10, 20 * pow10])
 
-    # Filtro de Candidatos: Elige el paso más pequeño que es >= al ideal
+    candidatos_raw = sorted(list(set([round(c, 3) for c in candidatos_raw if c > 0])))
+    
+    # --- Selección del paso (RESOLUCIÓN DEL ERROR min() arg is empty) ---
     candidatos_validos = [c for c in candidatos_raw if c >= ideal_step]
     
-    # --- BLINDAJE CRÍTICO (min() arg is empty fix) ---
     if not candidatos_validos:
-        # Si la lista está vacía (ej. ideal_step es 60 y los candidatos son [10, 20, 50]),
-        # usamos el más pequeño de los candidatos mayores que ideal_step * 2 para asegurar un paso limpio.
-        paso_y = min([c for c in [10, 20, 50, 100, 200, 500, 1000] if c >= ideal_step * 2])
+        # Fallback de seguridad extrema
+        paso_y = min([c for c in [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] if c >= ideal_step * 2])
     else:
         paso_y = min(candidatos_validos)
 
@@ -86,7 +91,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     picos_encontrados = 0
     altura_maxima_detectada = 0.0
     
-    # --- LECTURA DE MÚLTIPLES PICOS (RESTAURADO) ---
+    # --- BARRIDO DE MÚLTIPLES PICOS ---
     for i in range(50):
         fila_actual = fila_inicio + i
         dato_tR = df.iloc[fila_actual, 1]
@@ -109,7 +114,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             picos_encontrados += 1
             if H > altura_maxima_detectada: altura_maxima_detectada = H
 
-    # ===== RUIDO + DERIVA ESTABLE (Línea Base Corregida) =====
+    # ===== RUIDO + DERIVA ESTABLE (Línea Base Fina) =====
     ruido_estatico = np.random.normal(0, 0.15, len(t))
     vibracion_y_deriva = 0.25 * np.sin(t * 1.5) + 0.15 * np.sin(t * 12.0)
     y_total += ruido_estatico + vibracion_y_deriva
@@ -118,7 +123,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
     fig, ax = plt.subplots(figsize=(10, 4))
     
-    # --- GROSOR DE LÍNEA (Restaurado a Fino) ---
+    # --- GROSOR DE LÍNEA (0.6 para nitidez en escalas bajas) ---
     ax.plot(t, y_total, color="#205ea6", linewidth=0.6) 
 
     # --- ESCALA Y (Blindada y Estable) ---
@@ -134,7 +139,6 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     # Formatear etiquetas Y
     etiquetas_y = []
     for t_val in ticks_y:
-        # 1 decimal para valores muy bajos, entero para valores >= 10
         if t_val >= 10 and float(t_val).is_integer():
             etiquetas_y.append(str(int(t_val)))
         else:
@@ -246,11 +250,11 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Gen v3.5 (Estética y Multi-Pico estable)")
+    root.title("HPLC Gen v3.6 (Final Stable Build)")
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Blindaje contra errores de picos pequeños. Línea base más fina (0.6).", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Escala Y blindada, multi-pico estable y estética fina restaurada.", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
