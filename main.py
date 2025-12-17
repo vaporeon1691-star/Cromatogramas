@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
+
 from datetime import datetime, time
 import os
 import gc
@@ -33,12 +34,11 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
-    """Calcula el límite superior y el paso para EXACTAMENTE 5-6 divisiones, blindado."""
+    """Calcula el límite superior y el paso para EXACTAMENTE 5-6 divisiones."""
     if max_data < 0.5: 
         max_data = 0.5 
 
     target_max = max_data * 1.1 
-    # AJUSTE 1: Dividir por 4.5 para forzar el redondeo a 5 o 6 ticks (incluyendo 0).
     ideal_step = target_max / 4.5 
 
     try:
@@ -119,23 +119,26 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     
     ax.plot(t, y_total, color="#205ea6", linewidth=0.6) 
 
-    # --- ESCALA Y (Blindada y Estable) ---
+    # --- ESCALA Y (MODIFICADA: 5% POR DEBAJO DE CERO) ---
     max_y_total = np.max(y_total)
     limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
 
-    ax.set_ylim(0, limite_superior_y)
+    # Definimos el inicio del eje Y un 5% por debajo del límite superior
+    limite_inferior_y = -(limite_superior_y * 0.05)
+    ax.set_ylim(limite_inferior_y, limite_superior_y)
     
+    # Configuramos los ticks empezando en 0 para mantener la estética limpia
     ticks_y = np.arange(0, limite_superior_y + paso_y, paso_y)
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
     ax.set_yticks(ticks_y)
     
-    # --- AJUSTE 3 & 4: FORMATO Y REEMPLAZO "mAU" ---
+    # --- FORMATO Y REEMPLAZO "mAU" ---
     etiquetas_y = []
     for i, t_val in enumerate(ticks_y):
         if i == len(ticks_y) - 1:
-            etiquetas_y.append("mAU") # Último tick es la etiqueta
+            etiquetas_y.append("mAU") 
         elif t_val == 0.0:
-            etiquetas_y.append("0") # Cero sin decimal
+            etiquetas_y.append("0") 
         elif t_val >= 10 and float(t_val).is_integer():
             etiquetas_y.append(str(int(t_val)))
         else:
@@ -171,10 +174,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
 
     ax.set_xticklabels(labels_x)
     
-    # Eliminamos el set_ylabel, ya que la etiqueta "mAU" está ahora en el último tick Y
-    # ax.set_ylabel("mAU", loc="top", rotation=0, labelpad=-10) 
-    
-    # --- SUBDIVISIONES (Mantenidas) ---
+    # --- SUBDIVISIONES ---
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     ax.yaxis.set_minor_locator(AutoMinorLocator(5))
     ax.spines["top"].set_visible(False)
@@ -196,7 +196,6 @@ def seleccionar_archivo():
     temp_dir = tempfile.mkdtemp()
     
     try:
-        # --- LECTURA INICIAL Y COPIA LOCAL ---
         local_filepath = os.path.join(temp_dir, os.path.basename(archivo_red_original))
         shutil.copy2(archivo_red_original, local_filepath)
         
@@ -211,10 +210,8 @@ def seleccionar_archivo():
         raw_t_final = df_temp.iloc[2, 46]
         t_final = excel_a_minutos(raw_t_final) or 10
         
-        # --- PROCESAMIENTO ---
         fig, picos, alt_max, limite_y = procesar_archivo_local(local_filepath, t_final, hoja_leida)
         
-        # --- GUARDADO EN RED Y SINCRONIZACIÓN FORZADA ---
         png_temp = os.path.join(temp_dir, "crom.png")
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
         
@@ -228,7 +225,6 @@ def seleccionar_archivo():
         
         time_module.sleep(1) 
 
-        # --- INFORME FINAL ---
         mensaje = (f"✅ ¡PROCESO FINALIZADO!\n\n"
                    f"Límite de tiempo: {t_final:.2f} min\n"
                    f"Picos detectados: {picos}\n"
@@ -255,7 +251,7 @@ if __name__ == "__main__":
     root.geometry("400x320")
     
     tk.Label(root, text="Generador de Cromatogramas (Modo Estable)", font=("Arial", 12, "bold"), pady=10).pack()
-    tk.Label(root, text="Estética final: 5 divisiones, mAU en el último tick, base baja.", font=("Arial", 9), fg="darkgreen").pack()
+    tk.Label(root, text="Estética final: 5 divisiones, base con margen del 5%.", font=("Arial", 9), fg="darkgreen").pack()
     
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, padx=20, pady=10, bg="#205ea6", fg="white", font=("Arial", 11, "bold"))
     btn_cargar.pack(pady=20)
