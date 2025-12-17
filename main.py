@@ -89,13 +89,16 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     y_total += ruido
 
     plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 8})
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(t, y_total, color="#205ea6", linewidth=0.6) 
+    
+    # AJUSTE DE DIMENSIONES: 1472 x 693 píxeles
+    # Usamos 100 DPI, por lo que el tamaño en pulgadas es (14.72, 6.93)
+    fig, ax = plt.subplots(figsize=(14.72, 6.93), dpi=100)
+    ax.plot(t, y_total, color="#205ea6", linewidth=0.8) 
 
-    # AJUSTE EJE Y: 5% POR DEBAJO DE CERO
+    # AJUSTE EJE Y: 1% POR DEBAJO DE CERO
     max_y_total = np.max(y_total)
     limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
-    ax.set_ylim(-(limite_superior_y * 0.05), limite_superior_y)
+    ax.set_ylim(-(limite_superior_y * 0.01), limite_superior_y)
     
     ticks_y = np.arange(0, limite_superior_y + paso_y, paso_y)
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
@@ -141,17 +144,19 @@ def seleccionar_archivo():
             hoja_leida = "STD VALORACIÓN Y UD"
         except:
             df_temp = pd.read_excel(local_filepath, header=None)
-            hoja_leida = df_temp.index.name or "Hoja 1"
+            hoja_leida = "Hoja 1"
             
         t_final = excel_a_minutos(df_temp.iloc[2, 46]) or 10
         fig, picos, alt_max, limite_y = procesar_archivo_local(local_filepath, t_final, hoja_leida)
         
         ruta_destino_png = os.path.splitext(archivo_red_original)[0] + "_cromatograma.png"
-        fig.savefig(os.path.join(temp_dir, "crom.png"), dpi=300, bbox_inches='tight')
+        
+        # Guardado con las dimensiones exactas
+        fig.savefig(os.path.join(temp_dir, "crom.png"), dpi=100)
         plt.close(fig) 
         shutil.copy2(os.path.join(temp_dir, "crom.png"), ruta_destino_png)
         
-        messagebox.showinfo("Éxito", f"Cromatograma generado.\n\nPicos: {picos}\nAltura Máx: {alt_max:.1f} mAU\nEscala: {limite_y} mAU")
+        messagebox.showinfo("Éxito", f"Cromatograma generado.\n\nDimensiones: 1472x693\nPicos: {picos}\nEscala: {limite_y} mAU")
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo procesar:\n{str(e)}")
     finally:
@@ -160,19 +165,17 @@ def seleccionar_archivo():
         btn_cargar.config(text="Cargar Excel", state="normal")
 
 # =========================================================
-# MAIN - INTERFAZ GRÁFICA RENOVADA
+# MAIN - INTERFAZ GRÁFICA
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Visualizer v4.0")
+    root.title("HPLC Visualizer v4.1")
     root.geometry("450x450")
     root.configure(bg="#f5f5f5")
 
-    # Título Principal
     tk.Label(root, text="Generador de Cromatogramas", font=("Arial", 14, "bold"), bg="#f5f5f5", fg="#333").pack(pady=(20, 5))
     tk.Label(root, text="Sistema de Visualización de Datos HPLC", font=("Arial", 9), bg="#f5f5f5", fg="#666").pack()
 
-    # Bloque de Instrucciones (Sustituye a las letras verdes)
     frame_inst = tk.LabelFrame(root, text=" Instrucciones y Consideraciones ", font=("Arial", 9, "bold"), bg="#f5f5f5", padx=15, pady=10)
     frame_inst.pack(padx=20, pady=20, fill="both")
 
@@ -185,17 +188,16 @@ if __name__ == "__main__":
         "  - Altura (mAU): Columna J.\n"
         "  - Simetría: Columna O.\n"
         "  - Ancho (W): Columna R.\n"
-        "• El eje Y inicia un 5% debajo de cero para mejor visibilidad."
+        "• Salida: Imagen de 1472 x 693 px.\n"
+        "• El eje Y inicia un 1% debajo de cero."
     )
     tk.Label(frame_inst, text=instrucciones, font=("Arial", 8), bg="#f5f5f5", justify="left", fg="#444").pack()
 
-    # Botón de Carga
     btn_cargar = tk.Button(root, text="Cargar Excel", command=seleccionar_archivo, 
                            bg="#205ea6", fg="white", font=("Arial", 11, "bold"), 
                            padx=30, pady=12, cursor="hand2", relief="flat")
     btn_cargar.pack(pady=10)
 
-    # Pie de página
     tk.Label(root, text="La imagen se guardará automáticamente junto al archivo original.", 
              font=("Arial", 7, "italic"), bg="#f5f5f5", fg="#888").pack(side="bottom", pady=15)
 
