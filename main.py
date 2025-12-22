@@ -63,8 +63,8 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
     
     t = np.linspace(0, t_final, 15000)
-    # Nivel base DC un poco más alto para dar margen al ruido negativo
-    y_total = np.zeros_like(t) + 0.5 
+    # Nivel base un poco más alto para que el ruido no se vea recortado abajo
+    y_total = np.zeros_like(t) + 0.8 
 
     fila_inicio = 61
     picos_encontrados = 0
@@ -87,14 +87,13 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             picos_encontrados += 1
             if H > altura_maxima_detectada: altura_maxima_detectada = H
             
-            # --- AJUSTE CLAVE DE MARCAS DE INTEGRACIÓN ---
-            # Ampliamos el rango para que el punto de inicio/fin caiga en la base, no en la ladera.
-            # Usamos W (ancho) como referencia. 
+            # --- AJUSTE AGRESIVO DE INTEGRACIÓN ---
+            # Para asegurar que la línea baje al suelo, ampliamos mucho el rango de búsqueda.
+            # Multiplicamos el ancho por 1.7. Esto cubre el 99% del área del pico.
             ancho_ref = W if W > 0 else 0.5
             
-            # Factor 1.2 hacia atrás y 1.8 hacia adelante (para cubrir el "tailing" o cola del pico)
-            inicio_pico = tR - (ancho_ref * 1.2)
-            fin_pico = tR + (ancho_ref * 1.8)
+            inicio_pico = tR - (ancho_ref * 1.7)
+            fin_pico = tR + (ancho_ref * 1.7)
 
             lista_picos.append({
                 'tR': tR,
@@ -102,18 +101,21 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
                 'fin': fin_pico
             })
 
-    # --- AJUSTE DE RUIDO ---
-    # Aumentamos la desviación estándar (0.25) y la amplitud de las ondas senoidales
-    ruido = np.random.normal(0, 0.25, len(t)) + (0.35 * np.sin(t * 1.8) + 0.15 * np.sin(t * 15.0))
-    y_total += ruido
+    # --- AJUSTE DE RUIDO (MÁS INTENSO) ---
+    # Aumentamos la desviación estándar a 0.55 (antes 0.25)
+    # Añadimos ruido blanco de alta frecuencia (np.random.rand)
+    ruido_base = np.random.normal(0, 0.55, len(t)) 
+    ruido_vibracion = (np.random.rand(len(t)) - 0.5) * 0.8
+    ruido_ondas = (0.5 * np.sin(t * 2.0) + 0.2 * np.sin(t * 20.0))
+    
+    y_total += (ruido_base + ruido_vibracion + ruido_ondas)
 
-    # CONFIGURACIÓN DE FUENTES
-    # Aumentamos el tamaño a 9 para que sea legible
+    # CONFIGURACIÓN DE FUENTES (MÁS GRANDES)
     plt.rcParams.update({
         "font.family": "sans-serif", 
         "font.sans-serif": ["Arial"], 
-        "font.size": 9,     
-        "axes.linewidth": 0.8
+        "font.size": 11,      # AUMENTADO para mejor lectura
+        "axes.linewidth": 0.9
     })
     
     fig, ax = plt.subplots(figsize=(14.72, 6.93), dpi=100)
@@ -128,23 +130,27 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             idx_ini = (np.abs(t - pico['inicio'])).argmin()
             idx_fin = (np.abs(t - pico['fin'])).argmin()
             
+            # Tomamos el valor Y REAL de la señal con ruido en ese punto
             val_y_ini = y_total[idx_ini]
             val_y_fin = y_total[idx_fin]
             
-            # Línea Roja (Baseline)
+            # Línea Roja (Baseline) - Ahora conecta puntos en el "suelo" ruidoso
             ax.plot([t[idx_ini], t[idx_fin]], [val_y_ini, val_y_fin], 
-                    color="red", linewidth=1.0, linestyle="-", zorder=3)
+                    color="red", linewidth=1.1, linestyle="-", zorder=3)
             
             # Ticks de corte (Negros)
-            tick_size = altura_maxima_detectada * 0.025 if altura_maxima_detectada > 10 else 0.5
-            
-            # Tick Inicio (arriba)
-            ax.plot([t[idx_ini], t[idx_ini]], [val_y_ini, val_y_ini + tick_size], 
-                    color="black", linewidth=1.2, zorder=4)
+            # Calculamos un tamaño de tick visible pero proporcional
+            tick_size = altura_maxima_detectada * 0.03 
+            if tick_size < 1.5: tick_size = 1.5 # Mínimo visible
+            if tick_size > 15: tick_size = 15   # Máximo para no exagerar
 
-            # Tick Fin (abajo)
+            # Tick Inicio (Corta hacia arriba de la línea roja)
+            ax.plot([t[idx_ini], t[idx_ini]], [val_y_ini, val_y_ini + tick_size], 
+                    color="black", linewidth=1.3, zorder=4)
+
+            # Tick Fin (Corta hacia abajo de la línea roja)
             ax.plot([t[idx_fin], t[idx_fin]], [val_y_fin, val_y_fin - tick_size], 
-                    color="black", linewidth=1.2, zorder=4)
+                    color="black", linewidth=1.3, zorder=4)
                     
         except Exception:
             pass
@@ -152,7 +158,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     # EJE Y
     max_y_total = np.max(y_total)
     limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
-    ax.set_ylim(-(limite_superior_y * 0.02), limite_superior_y) # Un poco más de margen abajo
+    ax.set_ylim(-(limite_superior_y * 0.02), limite_superior_y) 
     
     ticks_y = np.arange(0, limite_superior_y + paso_y, paso_y)
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.01]
@@ -170,8 +176,8 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     ax.set_xticks(ticks_filtrados)
     ax.set_xticklabels([("min" if i == len(ticks_filtrados)-1 else (str(int(x)) if float(x).is_integer() else f"{x:.1f}")) for i, x in enumerate(ticks_filtrados)])
     
-    ax.tick_params(axis='both', which='major', width=0.8, length=4)
-    ax.tick_params(axis='both', which='minor', width=0.6, length=2)
+    ax.tick_params(axis='both', which='major', width=0.9, length=5, labelsize=10) # Labelsize forzado aquí también
+    ax.tick_params(axis='both', which='minor', width=0.7, length=3)
 
     ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     ax.yaxis.set_minor_locator(AutoMinorLocator(5))
@@ -227,7 +233,7 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Visualizer v4.3")
+    root.title("HPLC Visualizer v4.4")
     root.geometry("450x450")
     root.configure(bg="#f5f5f5")
 
@@ -247,7 +253,7 @@ if __name__ == "__main__":
         "  - Simetría: Columna O.\n"
         "  - Ancho (W): Columna R.\n"
         "• Salida: Imagen de 1472 x 693 px.\n"
-        "• Ruido ampliado y marcas ajustadas a la base."
+        "• Ruido alto, fuentes grandes e integración a línea base."
     )
     tk.Label(frame_inst, text=instrucciones, font=("Arial", 8), bg="#f5f5f5", justify="left", fg="#444").pack()
 
