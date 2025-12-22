@@ -32,40 +32,36 @@ def generar_pico_hplc_simetria(t, tR, sigma, H, simetria):
     return y
 
 def calcular_limite_y_escalado(max_data):
+    # Aseguramos un mínimo para evitar errores con picos vacíos
     if max_data < 0.5: max_data = 0.5 
-    target_max = max_data * 1.1 
+    target_max = max_data * 1.05 # Margen del 5%
 
-    # --- LOGICA FORZADA PARA ESCALADO CADA 200 ---
-    # Si el pico es grande (típico HPLC > 600 mAU), forzamos saltos de 200
-    if target_max > 600:
-        paso_y = 200
-        limite_superior_y = math.ceil(target_max / 200) * 200
-        return limite_superior_y, paso_y
-    
-    # Si es mediano (entre 200 y 600), saltos de 100
-    if target_max > 200:
-        paso_y = 100
-        limite_superior_y = math.ceil(target_max / 100) * 100
-        return limite_superior_y, paso_y
+    # --- LÓGICA DE 6 NIVELES ---
+    # Queremos dividir el rango en aprox 6 partes.
+    ideal_step = target_max / 6.0
 
-    # Lógica estándar para picos pequeños
-    ideal_step = target_max / 4.5 
-    try:
-        pow10 = 10**math.floor(math.log10(ideal_step)) if ideal_step > 0 else 1
-    except ValueError:
-        pow10 = 1 
-    
-    candidatos_raw = [1 * pow10, 2 * pow10, 5 * pow10]
-    if ideal_step < 1: candidatos_raw.extend([0.1, 0.2, 0.5])
-    
-    candidatos_raw = sorted(list(set([round(c, 3) for c in candidatos_raw if c > 0])))
-    candidatos_validos = [c for c in candidatos_raw if c >= ideal_step]
-    paso_y = min(candidatos_validos) if candidatos_validos else 100
+    # Calculamos la magnitud del paso (potencia de 10)
+    exponent = math.floor(math.log10(ideal_step)) if ideal_step > 0 else 0
+    fraction = ideal_step / (10**exponent) # Normalizamos a un valor entre 1 y 10
 
+    # Seleccionamos el paso estándar más cercano (1, 2, 5)
+    # Usamos medias geométricas para decidir el corte óptimo
+    if fraction < 1.42:  # sqrt(2) aprox
+        step_base = 1
+    elif fraction < 3.16: # sqrt(10) aprox
+        step_base = 2
+    elif fraction < 7.07: # sqrt(50) aprox
+        step_base = 5
+    else:
+        step_base = 10
+    
+    paso_y = step_base * (10**exponent)
+    
+    # Calculamos el límite superior basado en este paso
     limite_superior_y = math.ceil(target_max / paso_y) * paso_y
-    if limite_superior_y < 5.0:
-        limite_superior_y = 5.0
-        paso_y = 1.0
+    
+    # Corrección de seguridad para evitar gráficas planas
+    if limite_superior_y <= 0: limite_superior_y = 1.0 * paso_y
 
     return limite_superior_y, paso_y
 
@@ -76,7 +72,6 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     df = pd.read_excel(local_filepath, sheet_name=hoja_leida, engine="openpyxl", header=None)
     
     t = np.linspace(0, t_final, 15000)
-    # Nivel base ajustado para integrarse bien con el ruido
     y_total = np.zeros_like(t) + 0.8 
 
     fila_inicio = 61
@@ -100,7 +95,7 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
             picos_encontrados += 1
             if H > altura_maxima_detectada: altura_maxima_detectada = H
             
-            # --- INTEGRACIÓN AL SUELO ---
+            # Integración a línea base
             ancho_ref = W if W > 0 else 0.5
             inicio_pico = tR - (ancho_ref * 1.7)
             fin_pico = tR + (ancho_ref * 1.7)
@@ -111,15 +106,13 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
                 'fin': fin_pico
             })
 
-    # --- RUIDO (MANTENIDO ALTO) ---
+    # Ruido
     ruido_base = np.random.normal(0, 0.55, len(t)) 
     ruido_vibracion = (np.random.rand(len(t)) - 0.5) * 0.8
     ruido_ondas = (0.5 * np.sin(t * 2.0) + 0.2 * np.sin(t * 20.0))
-    
     y_total += (ruido_base + ruido_vibracion + ruido_ondas)
 
-    # --- CONFIGURACIÓN DE FUENTES AUMENTADA ---
-    # Subimos a 12 para que coincida con el tamaño visual de tu referencia
+    # Configuración Gráfica
     plt.rcParams.update({
         "font.family": "sans-serif", 
         "font.sans-serif": ["Arial"], 
@@ -129,26 +122,22 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
     
     fig, ax = plt.subplots(figsize=(14.72, 6.93), dpi=100)
     
-    # Plot principal (Grosor 0.8 para buen balance)
-    ax.plot(t, y_total, color="#205ea6", linewidth=0.8, zorder=2) 
+    ax.plot(t, y_total, color="#205ea6", linewidth=0.7, zorder=2) 
 
-    # DIBUJAR MARCAS
+    # Marcas e integración
     for pico in lista_picos:
         try:
             idx_ini = (np.abs(t - pico['inicio'])).argmin()
             idx_fin = (np.abs(t - pico['fin'])).argmin()
-            
             val_y_ini = y_total[idx_ini]
             val_y_fin = y_total[idx_fin]
             
-            # Línea Roja (Baseline)
             ax.plot([t[idx_ini], t[idx_fin]], [val_y_ini, val_y_fin], 
                     color="red", linewidth=1.1, linestyle="-", zorder=3)
             
-            # Ticks de corte
             tick_size = altura_maxima_detectada * 0.03 
             if tick_size < 1.5: tick_size = 1.5
-            if tick_size > 15: tick_size = 15
+            if tick_size > 50: tick_size = 50 # Aumentado el tope para picos gigantes
 
             ax.plot([t[idx_ini], t[idx_ini]], [val_y_ini, val_y_ini + tick_size], 
                     color="black", linewidth=1.3, zorder=4)
@@ -158,44 +147,55 @@ def procesar_archivo_local(local_filepath, t_final, hoja_leida):
         except Exception:
             pass
 
-    # --- EJE Y: CONTROLADO CADA 200 ---
+    # --- EJE Y: DINÁMICO (Target ~6 divisiones) ---
     max_y_total = np.max(y_total)
     limite_superior_y, paso_y = calcular_limite_y_escalado(max_y_total)
     ax.set_ylim(-(limite_superior_y * 0.02), limite_superior_y) 
     
     ticks_y = np.arange(0, limite_superior_y + paso_y, paso_y)
-    # Filtro para asegurar que no se pase del tope
     ticks_y = [t for t in ticks_y if t <= limite_superior_y * 1.001] 
     ax.set_yticks(ticks_y)
     
+    # Formato inteligente de etiquetas (sin decimales si es entero)
     etiquetas_y = [("mAU" if i == len(ticks_y)-1 else ("0" if v==0 else (str(int(v)) if v>=10 and float(v).is_integer() else f"{v:.1f}"))) for i, v in enumerate(ticks_y)]
     ax.set_yticklabels(etiquetas_y)
 
-    # --- EJE X: FORZADO A 1 MINUTO ---
+    # --- EJE X: DINÁMICO (Target ~10 divisiones) ---
     ax.set_xlim(0, t_final) 
     
-    # Aquí forzamos el paso a 1 min para que se vea 0, 1, 2, 3...
-    paso_x = 1 
+    # Calculamos paso ideal
+    ideal_step_x = t_final / 10.0
     
-    ticks_x = np.arange(0, math.ceil(t_final) + 1, paso_x)
-    # Filtramos para que no se salga del gráfico
+    # Buscamos el paso estándar más cercano (1, 2, 5, 10...)
+    exponent_x = math.floor(math.log10(ideal_step_x)) if ideal_step_x > 0 else 0
+    fraction_x = ideal_step_x / (10**exponent_x)
+    
+    if fraction_x < 1.42: paso_base_x = 1
+    elif fraction_x < 3.16: paso_base_x = 2
+    elif fraction_x < 7.07: paso_base_x = 5
+    else: paso_base_x = 10
+    
+    paso_x = paso_base_x * (10**exponent_x)
+    
+    # Generamos ticks
+    ticks_x = np.arange(0, math.ceil(t_final / paso_x) * paso_x + 0.001, paso_x)
     ticks_filtrados = [x for x in ticks_x if x <= t_final * 1.02]
     
-    # Aseguramos que el último tick se muestre si está muy cerca del final
-    if ticks_filtrados and (t_final - ticks_filtrados[-1]) > 0.5:
-         ticks_filtrados.append(int(t_final))
+    # Aseguramos tick final si falta
+    if ticks_filtrados and (t_final - ticks_filtrados[-1]) > (paso_x * 0.6):
+         ticks_filtrados.append(int(t_final) if int(t_final)==t_final else t_final)
 
     ax.set_xticks(ticks_filtrados)
     
-    # Etiquetas simples para los minutos
-    etiquetas_x = [("min" if i == len(ticks_filtrados)-1 else str(int(x))) for i, x in enumerate(ticks_filtrados)]
+    # Etiquetas eje X
+    etiquetas_x = [("min" if i == len(ticks_filtrados)-1 else (str(int(x)) if float(x).is_integer() else f"{x:.1f}")) for i, x in enumerate(ticks_filtrados)]
     ax.set_xticklabels(etiquetas_x)
     
-    # Ajuste de ticks visuales
-    ax.tick_params(axis='both', which='major', width=1.0, length=5, labelsize=12) # Texto grande
+    # Ajustes visuales finales
+    ax.tick_params(axis='both', which='major', width=1.0, length=5, labelsize=12)
     ax.tick_params(axis='both', which='minor', width=0.7, length=3)
 
-    ax.xaxis.set_minor_locator(AutoMinorLocator(5)) # 5 subdivisiones por minuto
+    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
     ax.yaxis.set_minor_locator(AutoMinorLocator(5)) 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -249,7 +249,7 @@ def seleccionar_archivo():
 # =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("HPLC Visualizer v4.5 (Ejes Ajustados)")
+    root.title("HPLC Visualizer v4.7 (Escalado Inteligente)")
     root.geometry("450x450")
     root.configure(bg="#f5f5f5")
 
@@ -269,7 +269,7 @@ if __name__ == "__main__":
         "  - Simetría: Columna O.\n"
         "  - Ancho (W): Columna R.\n"
         "• Salida: 1472 x 693 px.\n"
-        "• Eje X cada 1 min, Eje Y cada 200 mAU."
+        "• Eje Y: Aprox 6 niveles. Eje X: Aprox 10 divisiones."
     )
     tk.Label(frame_inst, text=instrucciones, font=("Arial", 8), bg="#f5f5f5", justify="left", fg="#444").pack()
 
